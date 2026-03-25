@@ -1,5 +1,6 @@
 const std = @import("std");
 const WalletStorageProvider = @import("interface.zig").WalletStorageProvider;
+const types = @import("types.zig");
 
 pub const WalletStorageManager = struct {
     allocator: std.mem.Allocator,
@@ -37,32 +38,32 @@ pub const WalletStorageManager = struct {
         return provider.findOrInsertUser(allocator, identity_key);
     }
 
-    pub fn createAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn createAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         const provider = self.active orelse return error.NoActiveProvider;
         return provider.createAction(allocator, auth, args);
     }
 
-    pub fn processAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn processAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         const provider = self.active orelse return error.NoActiveProvider;
         return provider.processAction(allocator, auth, args);
     }
 
-    pub fn abortAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn abortAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         const provider = self.active orelse return error.NoActiveProvider;
         return provider.abortAction(allocator, auth, args);
     }
 
-    pub fn listOutputs(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn listOutputs(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         const provider = self.active orelse return error.NoActiveProvider;
         return provider.listOutputs(allocator, auth, args);
     }
 
-    pub fn listActions(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn listActions(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         const provider = self.active orelse return error.NoActiveProvider;
         return provider.listActions(allocator, auth, args);
     }
 
-    pub fn internalizeAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn internalizeAction(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         const provider = self.active orelse return error.NoActiveProvider;
         return provider.internalizeAction(allocator, auth, args);
     }

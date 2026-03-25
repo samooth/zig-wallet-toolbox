@@ -1,4 +1,5 @@
 const std = @import("std");
+const types = @import("types.zig");
 
 pub const WalletStorageProvider = struct {
     ptr: *anyopaque,
@@ -8,12 +9,12 @@ pub const WalletStorageProvider = struct {
         makeAvailable: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!std.json.Value,
         migrate: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, storage_name: []const u8) anyerror![]const u8,
         findOrInsertUser: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, identity_key: []const u8) anyerror!std.json.Value,
-        createAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value,
-        processAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value,
-        abortAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value,
-        listOutputs: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value,
-        listActions: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value,
-        internalizeAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value,
+        createAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
+        processAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
+        abortAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
+        listOutputs: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
+        listActions: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
+        internalizeAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
         destroy: *const fn (ptr: *anyopaque) void,
     };
 
@@ -29,27 +30,27 @@ pub const WalletStorageProvider = struct {
         return self.vtable.findOrInsertUser(self.ptr, allocator, identity_key);
     }
 
-    pub fn createAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) !std.json.Value {
+    pub fn createAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         return self.vtable.createAction(self.ptr, allocator, auth, args);
     }
 
-    pub fn processAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) !std.json.Value {
+    pub fn processAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         return self.vtable.processAction(self.ptr, allocator, auth, args);
     }
 
-    pub fn abortAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) !std.json.Value {
+    pub fn abortAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         return self.vtable.abortAction(self.ptr, allocator, auth, args);
     }
 
-    pub fn listOutputs(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) !std.json.Value {
+    pub fn listOutputs(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         return self.vtable.listOutputs(self.ptr, allocator, auth, args);
     }
 
-    pub fn listActions(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) !std.json.Value {
+    pub fn listActions(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         return self.vtable.listActions(self.ptr, allocator, auth, args);
     }
 
-    pub fn internalizeAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) !std.json.Value {
+    pub fn internalizeAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         return self.vtable.internalizeAction(self.ptr, allocator, auth, args);
     }
 
@@ -72,27 +73,27 @@ pub const WalletStorageProvider = struct {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.findOrInsertUser(allocator, identity_key);
             }
-            fn createAction(p: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+            fn createAction(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.createAction(allocator, auth, args);
             }
-            fn processAction(p: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+            fn processAction(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.processAction(allocator, auth, args);
             }
-            fn abortAction(p: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+            fn abortAction(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.abortAction(allocator, auth, args);
             }
-            fn listOutputs(p: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+            fn listOutputs(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.listOutputs(allocator, auth, args);
             }
-            fn listActions(p: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+            fn listActions(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.listActions(allocator, auth, args);
             }
-            fn internalizeAction(p: *anyopaque, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+            fn internalizeAction(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.internalizeAction(allocator, auth, args);
             }

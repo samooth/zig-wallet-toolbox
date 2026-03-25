@@ -59,10 +59,20 @@ pub const AuthMessage = struct {
             try writer.print(",\"yourNonce\":\"{s}\"", .{v});
         }
         if (self.payload) |v| {
-            try writer.print(",\"payload\":\"{s}\"", .{v});
+            try writer.writeAll(",\"payload\":[");
+            for (v, 0..) |byte, i| {
+                if (i > 0) try writer.writeAll(",");
+                try std.fmt.format(writer, "{d}", .{byte});
+            }
+            try writer.writeAll("]");
         }
         if (self.signature) |v| {
-            try writer.print(",\"signature\":\"{s}\"", .{v});
+            try writer.writeAll(",\"signature\":[");
+            for (v, 0..) |byte, i| {
+                if (i > 0) try writer.writeAll(",");
+                try std.fmt.format(writer, "{d}", .{byte});
+            }
+            try writer.writeAll("]");
         }
 
         try writer.writeAll("}");
@@ -77,8 +87,8 @@ pub const AuthMessage = struct {
         nonce: ?[]const u8 = null,
         initialNonce: ?[]const u8 = null,
         yourNonce: ?[]const u8 = null,
-        payload: ?[]const u8 = null,
-        signature: ?[]const u8 = null,
+        payload: ?std.json.Value = null,
+        signature: ?std.json.Value = null,
     };
 
     /// Result of fromJson; owns the backing memory for all string fields.
@@ -95,12 +105,31 @@ pub const AuthMessage = struct {
         }
     };
 
+    fn jsonArrayToBytes(allocator: std.mem.Allocator, val: ?std.json.Value) !?[]const u8 {
+        const v = val orelse return null;
+        switch (v) {
+            .array => |arr| {
+                const bytes = try allocator.alloc(u8, arr.items.len);
+                for (arr.items, 0..) |item, i| {
+                    bytes[i] = switch (item) {
+                        .integer => |n| @intCast(n),
+                        else => return error.InvalidByteArray,
+                    };
+                }
+                return bytes;
+            },
+            .null => return null,
+            else => return error.InvalidByteArray,
+        }
+    }
+
     pub fn fromJson(allocator: std.mem.Allocator, json_bytes: []const u8) !Parsed {
         const parsed = try std.json.parseFromSlice(JsonWire, allocator, json_bytes, .{
             .ignore_unknown_fields = true,
             .allocate = .alloc_always,
         });
 
+        const arena_alloc = parsed.arena.allocator();
         const wire = parsed.value;
         const msg = AuthMessage{
             .version = wire.version,
@@ -109,8 +138,8 @@ pub const AuthMessage = struct {
             .nonce = wire.nonce,
             .initial_nonce = wire.initialNonce,
             .your_nonce = wire.yourNonce,
-            .payload = wire.payload,
-            .signature = wire.signature,
+            .payload = try jsonArrayToBytes(arena_alloc, wire.payload),
+            .signature = try jsonArrayToBytes(arena_alloc, wire.signature),
         };
 
         return .{
@@ -148,6 +177,33 @@ test "AuthMessage round-trip JSON" {
     try std.testing.expect(parsed.value.signature == null);
 }
 
+test "AuthMessage payload/signature serialize as number arrays" {
+    const allocator = std.testing.allocator;
+    const payload_bytes = &[_]u8{ 48, 69, 2, 33 };
+    const sig_bytes = &[_]u8{ 30, 44, 0, 255 };
+    const msg = AuthMessage{
+        .version = "0.1",
+        .message_type = .general,
+        .identity_key = "02ff",
+        .payload = payload_bytes,
+        .signature = sig_bytes,
+    };
+
+    const json = try msg.toJson(allocator);
+    defer allocator.free(json);
+
+    // Verify the JSON contains number arrays, not base64 strings
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"payload\":[48,69,2,33]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"signature\":[30,44,0,255]") != null);
+
+    // Round-trip: parse back and verify bytes match
+    var parsed = try AuthMessage.fromJson(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualSlices(u8, payload_bytes, parsed.value.payload.?);
+    try std.testing.expectEqualSlices(u8, sig_bytes, parsed.value.signature.?);
+}
+
 test "MessageType wire string round-trip" {
     const cases = [_]MessageType{ .initial_request, .initial_response, .certificate_request, .certificate_response, .general };
     for (cases) |mt| {
@@ -160,7 +216,7 @@ test "MessageType wire string round-trip" {
 test "AuthMessage fromJson with all fields" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"version":"0.1","messageType":"general","identityKey":"02ff","nonce":"n1","initialNonce":"n2","yourNonce":"n3","payload":"p1","signature":"s1"}
+        \\{"version":"0.1","messageType":"general","identityKey":"02ff","nonce":"n1","initialNonce":"n2","yourNonce":"n3","payload":[1,2,3],"signature":[4,5,6]}
     ;
     var parsed = try AuthMessage.fromJson(allocator, json);
     defer parsed.deinit();
@@ -169,6 +225,6 @@ test "AuthMessage fromJson with all fields" {
     try std.testing.expectEqualStrings("n1", msg.nonce.?);
     try std.testing.expectEqualStrings("n2", msg.initial_nonce.?);
     try std.testing.expectEqualStrings("n3", msg.your_nonce.?);
-    try std.testing.expectEqualStrings("p1", msg.payload.?);
-    try std.testing.expectEqualStrings("s1", msg.signature.?);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, msg.payload.?);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 4, 5, 6 }, msg.signature.?);
 }

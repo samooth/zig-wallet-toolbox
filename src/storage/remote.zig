@@ -2,6 +2,9 @@ const std = @import("std");
 const auth_fetch_mod = @import("../auth/auth_fetch.zig");
 const json_rpc = @import("../http/json_rpc.zig");
 const WalletStorageProvider = @import("interface.zig").WalletStorageProvider;
+const types = @import("types.zig");
+
+const log = std.log.scoped(.remote_storage);
 
 pub const RemoteStorageClient = struct {
     allocator: std.mem.Allocator,
@@ -31,7 +34,7 @@ pub const RemoteStorageClient = struct {
         var parsed = try json_rpc.parseResponse(allocator, response.body);
 
         if (parsed.@"error") |rpc_err| {
-            _ = rpc_err;
+            log.err("RPC error {d}: {s}", .{ rpc_err.code, rpc_err.message });
             parsed.deinit();
             return error.RpcError;
         }
@@ -42,6 +45,15 @@ pub const RemoteStorageClient = struct {
 
         parsed.deinit();
         return .null;
+    }
+
+    fn buildAuthJson(self: *RemoteStorageClient, auth: types.AuthId) !std.json.Value {
+        var obj = std.json.ObjectMap.init(self.allocator);
+        try obj.put("identityKey", .{ .string = auth.identity_key });
+        if (auth.storage_identity_key) |sik| {
+            try obj.put("storageIdentityKey", .{ .string = sik });
+        }
+        return .{ .object = obj };
     }
 
     pub fn makeAvailable(self: *RemoteStorageClient, allocator: std.mem.Allocator) anyerror!std.json.Value {
@@ -70,55 +82,55 @@ pub const RemoteStorageClient = struct {
         return self.rpcCall(allocator, "findOrInsertUser", params);
     }
 
-    pub fn createAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn createAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
         defer params.array.deinit();
-        try params.array.append(.{ .string = auth });
+        try params.array.append(try self.buildAuthJson(auth));
         try params.array.append(args);
 
         return self.rpcCall(allocator, "createAction", params);
     }
 
-    pub fn processAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn processAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
         defer params.array.deinit();
-        try params.array.append(.{ .string = auth });
+        try params.array.append(try self.buildAuthJson(auth));
         try params.array.append(args);
 
         return self.rpcCall(allocator, "processAction", params);
     }
 
-    pub fn abortAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn abortAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
         defer params.array.deinit();
-        try params.array.append(.{ .string = auth });
+        try params.array.append(try self.buildAuthJson(auth));
         try params.array.append(args);
 
         return self.rpcCall(allocator, "abortAction", params);
     }
 
-    pub fn listOutputs(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn listOutputs(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
         defer params.array.deinit();
-        try params.array.append(.{ .string = auth });
+        try params.array.append(try self.buildAuthJson(auth));
         try params.array.append(args);
 
         return self.rpcCall(allocator, "listOutputs", params);
     }
 
-    pub fn listActions(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn listActions(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
         defer params.array.deinit();
-        try params.array.append(.{ .string = auth });
+        try params.array.append(try self.buildAuthJson(auth));
         try params.array.append(args);
 
         return self.rpcCall(allocator, "listActions", params);
     }
 
-    pub fn internalizeAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: []const u8, args: std.json.Value) anyerror!std.json.Value {
+    pub fn internalizeAction(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value {
         var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
         defer params.array.deinit();
-        try params.array.append(.{ .string = auth });
+        try params.array.append(try self.buildAuthJson(auth));
         try params.array.append(args);
 
         return self.rpcCall(allocator, "internalizeAction", params);

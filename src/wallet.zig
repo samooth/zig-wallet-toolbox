@@ -120,15 +120,19 @@ pub const Wallet = struct {
         return pubkey.verifyDigest(digest.bytes, signature);
     }
 
+    fn authId(self: *const Wallet) storage.types.AuthId {
+        return .{ .identity_key = &self.identity_key };
+    }
+
     pub fn createAction(self: *Wallet, args: signer.types.CreateActionArgs) !signer.types.CreateActionResult {
         const args_json = try args.toJson(self.allocator);
-        const result = try self.storage_manager.createAction(self.allocator, &self.identity_key, args_json);
+        const result = try self.storage_manager.createAction(self.allocator, self.authId(), args_json);
         return .{ .raw = result };
     }
 
     pub fn signAction(self: *Wallet, args: signer.types.SignActionArgs) !signer.types.SignActionResult {
         const args_json = try args.toJson(self.allocator);
-        const result = try self.storage_manager.processAction(self.allocator, &self.identity_key, args_json);
+        const result = try self.storage_manager.processAction(self.allocator, self.authId(), args_json);
         return .{ .raw = result };
     }
 
@@ -136,17 +140,17 @@ pub const Wallet = struct {
         var obj = std.json.ObjectMap.init(self.allocator);
         try obj.put("reference", .{ .string = reference });
         const args_json: std.json.Value = .{ .object = obj };
-        return self.storage_manager.abortAction(self.allocator, &self.identity_key, args_json);
+        return self.storage_manager.abortAction(self.allocator, self.authId(), args_json);
     }
 
     pub fn listOutputs(self: *Wallet, args: ListOutputsArgs) !std.json.Value {
         const args_json = try args.toJson(self.allocator);
-        return self.storage_manager.listOutputs(self.allocator, &self.identity_key, args_json);
+        return self.storage_manager.listOutputs(self.allocator, self.authId(), args_json);
     }
 
     pub fn listActions(self: *Wallet, args: ListActionsArgs) !std.json.Value {
         const args_json = try args.toJson(self.allocator);
-        return self.storage_manager.listActions(self.allocator, &self.identity_key, args_json);
+        return self.storage_manager.listActions(self.allocator, self.authId(), args_json);
     }
 };
 
