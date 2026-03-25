@@ -1,3 +1,4 @@
+pub const auth_fetch = @import("auth_fetch.zig");
 pub const message = @import("message.zig");
 pub const nonce = @import("nonce.zig");
 pub const payload = @import("payload.zig");
@@ -5,6 +6,8 @@ pub const peer = @import("peer.zig");
 pub const session = @import("session.zig");
 pub const transport = @import("transport.zig");
 
+pub const AuthFetch = auth_fetch.AuthFetch;
+pub const AuthResponse = auth_fetch.AuthResponse;
 pub const AuthMessage = message.AuthMessage;
 pub const MessageType = message.MessageType;
 pub const PeerSession = session.PeerSession;
