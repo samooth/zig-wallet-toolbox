@@ -22,6 +22,7 @@ fn doRequest(
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
+
     var req = try client.request(method, uri, .{
         .extra_headers = extra_headers,
     });
@@ -37,7 +38,13 @@ fn doRequest(
     var resp = try req.receiveHead(&redirect_buf);
 
     var transfer_buf: [8192]u8 = undefined;
-    var body_reader = resp.reader(&transfer_buf);
+
+    // Handle decompression for gzip/deflate responses (CDNs like Cloudflare).
+    // Flate requires buffer >= max_window_len (history_len * 2 = 65536).
+    var decompress: std.http.Decompress = undefined;
+    const decompress_buf = try allocator.alloc(u8, 1 << 16); // 64KB
+    defer allocator.free(decompress_buf);
+    const body_reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
     const body = try body_reader.allocRemaining(allocator, std.io.Limit.limited(4 * 1024 * 1024));
 
     return .{

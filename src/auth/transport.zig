@@ -49,15 +49,11 @@ pub const SimplifiedHttpTransport = struct {
     pub fn sendGeneral(self: *SimplifiedHttpTransport, msg: AuthMessage, method: []const u8, target_url: []const u8) !GeneralResponse {
         _ = method;
 
-        // Decode the base64 payload to get the serialized request
-        const payload_b64 = msg.payload orelse return error.MissingPayload;
-        const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(payload_b64) catch return error.InvalidPayload;
-        const payload_bytes = try self.allocator.alloc(u8, decoded_len);
-        defer self.allocator.free(payload_bytes);
-        std.base64.standard.Decoder.decode(payload_bytes, payload_b64) catch return error.InvalidPayload;
+        // Payload is raw bytes (no longer base64-encoded)
+        const payload_raw = msg.payload orelse return error.MissingPayload;
 
         // Deserialize to get the actual HTTP request details
-        const req = try payload_mod.deserializeRequest(self.allocator, payload_bytes);
+        const req = try payload_mod.deserializeRequest(self.allocator, payload_raw);
         defer {
             self.allocator.free(req.method);
             if (req.path) |p| self.allocator.free(p);
@@ -75,16 +71,10 @@ pub const SimplifiedHttpTransport = struct {
         var req_id_b64_buf: [48]u8 = undefined; // 32 bytes -> 44 base64 chars, use 48 for safety
         _ = std.base64.standard.Encoder.encode(req_id_b64_buf[0..req_id_b64_len], &req.request_id);
 
-        // Hex-encode the signature
-        const sig_b64 = msg.signature orelse "";
-        const sig_decoded_len = std.base64.standard.Decoder.calcSizeForSlice(sig_b64) catch 0;
-        const sig_bytes = try self.allocator.alloc(u8, sig_decoded_len);
-        defer self.allocator.free(sig_bytes);
-        if (sig_decoded_len > 0) {
-            std.base64.standard.Decoder.decode(sig_bytes, sig_b64) catch {};
-        }
+        // Hex-encode the raw signature bytes for the HTTP header
+        const sig_raw = msg.signature orelse "";
         var sig_hex_buf: [144]u8 = undefined; // max 72 DER bytes -> 144 hex chars
-        const sig_hex = hex.encodeLower(sig_bytes, &sig_hex_buf) catch "";
+        const sig_hex = hex.encodeLower(sig_raw, &sig_hex_buf) catch "";
 
         // Build the full URL
         const path_part = req.path orelse "";
@@ -178,7 +168,10 @@ fn doGeneralRequest(
     var resp = try req.receiveHead(&redirect_buf);
 
     var transfer_buf: [8192]u8 = undefined;
-    var body_reader = resp.reader(&transfer_buf);
+    var decompress: std.http.Decompress = undefined;
+    const decompress_buf = try allocator.alloc(u8, 1 << 16);
+    defer allocator.free(decompress_buf);
+    const body_reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
     const resp_body = try body_reader.allocRemaining(allocator, std.io.Limit.limited(4 * 1024 * 1024));
 
     return .{

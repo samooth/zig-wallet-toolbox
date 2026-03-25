@@ -77,19 +77,14 @@ pub const Peer = struct {
         const signature = try self.createSignature(request_payload, our_nonce, peer_nonce, peer_identity);
         defer self.allocator.free(signature);
 
-        // Base64-encode the payload for the AuthMessage
-        const payload_b64_len = std.base64.standard.Encoder.calcSize(request_payload.len);
-        const payload_b64 = try self.allocator.alloc(u8, payload_b64_len);
-        defer self.allocator.free(payload_b64);
-        _ = std.base64.standard.Encoder.encode(payload_b64, request_payload);
-
+        // Payload is stored as raw bytes (AuthMessage.toJson serializes as number array)
         const msg = AuthMessage{
             .version = auth_version,
             .message_type = .general,
             .identity_key = &self.identity_key_hex,
             .nonce = our_nonce,
             .your_nonce = peer_nonce,
-            .payload = payload_b64,
+            .payload = request_payload,
             .signature = signature,
         };
 
@@ -162,12 +157,20 @@ pub const Peer = struct {
             resp_msg.signature orelse return error.MissingSignature,
         );
 
+        // Dupe all strings into session-owned memory (originals are freed by defer)
+        const owned_client_nonce = try self.allocator.dupe(u8, client_nonce);
+        errdefer self.allocator.free(owned_client_nonce);
+        const owned_server_nonce = try self.allocator.dupe(u8, server_nonce);
+        errdefer self.allocator.free(owned_server_nonce);
+        const owned_server_identity = try self.allocator.dupe(u8, server_identity);
+        errdefer self.allocator.free(owned_server_identity);
+
         // Update session to authenticated
         try self.session_manager.updateSession(.{
             .is_authenticated = true,
-            .session_nonce = client_nonce,
-            .peer_nonce = server_nonce,
-            .peer_identity_key = server_identity,
+            .session_nonce = owned_client_nonce,
+            .peer_nonce = owned_server_nonce,
+            .peer_identity_key = owned_server_identity,
             .last_update = std.time.milliTimestamp(),
         });
 
@@ -197,12 +200,10 @@ pub const Peer = struct {
         // Sign
         const der_sig = try derived_key.signDigest(digest.bytes);
 
-        // Base64-encode the DER signature
-        const b64_len = std.base64.standard.Encoder.calcSize(der_sig.len);
-        const b64_buf = try self.allocator.alloc(u8, b64_len);
-        _ = std.base64.standard.Encoder.encode(b64_buf, der_sig.asSlice());
-
-        return b64_buf;
+        // Return raw DER bytes (AuthMessage.toJson serializes as number array)
+        const raw = try self.allocator.alloc(u8, der_sig.len);
+        @memcpy(raw, der_sig.asSlice());
+        return raw;
     }
 
     pub const SendResult = struct {
@@ -222,7 +223,7 @@ fn verifySignature(
     peer_identity_hex: []const u8,
     data: []const u8,
     key_id: []const u8,
-    signature_b64: []const u8,
+    signature_raw: []const u8, // raw DER bytes (from JSON number array)
 ) !void {
     const counterparty = try PublicKey.fromHex(peer_identity_hex);
 
@@ -232,13 +233,7 @@ fn verifySignature(
     // Derive the expected signing public key (counterparty side)
     const derived_pub = try counterparty.deriveChild(our_private_key, invoice);
 
-    // Decode the signature from base64
-    const sig_decoded_len = std.base64.standard.Decoder.calcSizeForSlice(signature_b64) catch return error.InvalidSignature;
-    const sig_bytes = try allocator.alloc(u8, sig_decoded_len);
-    defer allocator.free(sig_bytes);
-    std.base64.standard.Decoder.decode(sig_bytes, signature_b64) catch return error.InvalidSignature;
-
-    const der_sig = sig_mod.DerSignature.fromDer(sig_bytes) catch return error.InvalidSignature;
+    const der_sig = sig_mod.DerSignature.fromDer(signature_raw) catch return error.InvalidSignature;
 
     // SHA-256 digest of the data
     const digest = crypto_hash.sha256(data);

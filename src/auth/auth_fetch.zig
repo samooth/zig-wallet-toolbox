@@ -105,34 +105,13 @@ pub const AuthFetch = struct {
         const serialized = try payload_mod.serializeRequest(self.allocator, req_payload);
         defer self.allocator.free(serialized);
 
-        // Send via peer
-        var result = try p.sendMessage(method, origin, serialized);
-
-        // Deserialize the response payload
-        const resp = try payload_mod.deserializeResponse(self.allocator, result.body);
-        defer {
-            for (resp.headers) |h| {
-                self.allocator.free(h.name);
-                self.allocator.free(h.value);
-            }
-            self.allocator.free(resp.headers);
-        }
-        // Free the raw result body now that we've deserialized
-        result.allocator.free(result.body);
-
-        // Copy the response body since we're freeing the deserialized result
-        const resp_body = if (resp.body) |b|
-            try self.allocator.dupe(u8, b)
-        else
-            try self.allocator.alloc(u8, 0);
-
-        // Free the deserialized body now that we've copied it
-        if (resp.body) |b| self.allocator.free(b);
+        // Send via peer — returns the raw HTTP response (status + body)
+        const result = try p.sendMessage(method, origin, serialized);
 
         return .{
-            .status = resp.status,
-            .body = resp_body,
-            .allocator = self.allocator,
+            .status = @intFromEnum(result.status),
+            .body = result.body,
+            .allocator = result.allocator,
         };
     }
 

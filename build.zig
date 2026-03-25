@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_module.addImport("zig-wallet-toolbox", root_module);
+    test_module.addImport("bsvz", bsvz_module);
 
     const integration_tests = b.addTest(.{
         .root_module = test_module,

@@ -79,35 +79,19 @@ pub const AuthMessage = struct {
         return buf.toOwnedSlice(allocator);
     }
 
-    /// Wire format for JSON deserialization (camelCase field names).
-    const JsonWire = struct {
-        version: []const u8,
-        messageType: []const u8,
-        identityKey: []const u8,
-        nonce: ?[]const u8 = null,
-        initialNonce: ?[]const u8 = null,
-        yourNonce: ?[]const u8 = null,
-        payload: ?std.json.Value = null,
-        signature: ?std.json.Value = null,
-    };
-
     /// Result of fromJson; owns the backing memory for all string fields.
     /// Call deinit() when done to free.
     pub const Parsed = struct {
         value: AuthMessage,
-        arena: *std.heap.ArenaAllocator,
-        allocator: std.mem.Allocator,
+        arena: std.heap.ArenaAllocator,
 
         pub fn deinit(self: *Parsed) void {
-            const alloc = self.allocator;
             self.arena.deinit();
-            alloc.destroy(self.arena);
         }
     };
 
-    fn jsonArrayToBytes(allocator: std.mem.Allocator, val: ?std.json.Value) !?[]const u8 {
-        const v = val orelse return null;
-        switch (v) {
+    fn jsonArrayToBytes(allocator: std.mem.Allocator, val: std.json.Value) !?[]const u8 {
+        switch (val) {
             .array => |arr| {
                 const bytes = try allocator.alloc(u8, arr.items.len);
                 for (arr.items, 0..) |item, i| {
@@ -123,29 +107,47 @@ pub const AuthMessage = struct {
         }
     }
 
-    pub fn fromJson(allocator: std.mem.Allocator, json_bytes: []const u8) !Parsed {
-        const parsed = try std.json.parseFromSlice(JsonWire, allocator, json_bytes, .{
-            .ignore_unknown_fields = true,
-            .allocate = .alloc_always,
-        });
+    fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+        const val = obj.get(key) orelse return null;
+        return switch (val) {
+            .string => |s| s,
+            else => null,
+        };
+    }
 
-        const arena_alloc = parsed.arena.allocator();
-        const wire = parsed.value;
+    pub fn fromJson(allocator: std.mem.Allocator, json_bytes: []const u8) !Parsed {
+        // Use fully dynamic parsing to avoid Zig 0.15 limitations with
+        // mixed typed/dynamic struct fields
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, arena_alloc, json_bytes, .{});
+        const root = parsed.value;
+
+        const obj = switch (root) {
+            .object => |o| o,
+            else => return error.InvalidMessageFormat,
+        };
+
+        const version = getStr(obj, "version") orelse return error.MissingField;
+        const message_type_str = getStr(obj, "messageType") orelse return error.MissingField;
+        const identity_key = getStr(obj, "identityKey") orelse return error.MissingField;
+
         const msg = AuthMessage{
-            .version = wire.version,
-            .message_type = MessageType.fromWireString(wire.messageType) orelse return error.InvalidMessageType,
-            .identity_key = wire.identityKey,
-            .nonce = wire.nonce,
-            .initial_nonce = wire.initialNonce,
-            .your_nonce = wire.yourNonce,
-            .payload = try jsonArrayToBytes(arena_alloc, wire.payload),
-            .signature = try jsonArrayToBytes(arena_alloc, wire.signature),
+            .version = version,
+            .message_type = MessageType.fromWireString(message_type_str) orelse return error.InvalidMessageType,
+            .identity_key = identity_key,
+            .nonce = getStr(obj, "nonce"),
+            .initial_nonce = getStr(obj, "initialNonce"),
+            .your_nonce = getStr(obj, "yourNonce"),
+            .payload = if (obj.get("payload")) |v| try jsonArrayToBytes(arena_alloc, v) else null,
+            .signature = if (obj.get("signature")) |v| try jsonArrayToBytes(arena_alloc, v) else null,
         };
 
         return .{
             .value = msg,
-            .arena = parsed.arena,
-            .allocator = allocator,
+            .arena = arena,
         };
     }
 };
