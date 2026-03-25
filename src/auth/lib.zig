@@ -1,12 +1,16 @@
 pub const message = @import("message.zig");
 pub const nonce = @import("nonce.zig");
 pub const payload = @import("payload.zig");
+pub const peer = @import("peer.zig");
 pub const session = @import("session.zig");
+pub const transport = @import("transport.zig");
 
 pub const AuthMessage = message.AuthMessage;
 pub const MessageType = message.MessageType;
 pub const PeerSession = session.PeerSession;
 pub const SessionManager = session.SessionManager;
+pub const Peer = peer.Peer;
+pub const SimplifiedHttpTransport = transport.SimplifiedHttpTransport;
 pub const createNonce = nonce.createNonce;
 pub const verifyNonce = nonce.verifyNonce;
 
