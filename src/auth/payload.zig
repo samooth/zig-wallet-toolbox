@@ -46,10 +46,8 @@ fn appendString(list: *ByteList, allocator: std.mem.Allocator, s: []const u8) !v
 
 fn appendOptionalBytes(list: *ByteList, allocator: std.mem.Allocator, data: ?[]const u8) !void {
     if (data) |d| {
-        if (d.len == 0) {
-            try appendNegativeOne(list, allocator);
-        } else {
-            try appendVarint(list, allocator, @intCast(d.len));
+        try appendVarint(list, allocator, @intCast(d.len));
+        if (d.len > 0) {
             try list.appendSlice(allocator, d);
         }
     } else {
@@ -89,7 +87,8 @@ fn readString(allocator: std.mem.Allocator, data: []const u8, pos: *usize) ![]co
 
 fn readOptionalBytes(allocator: std.mem.Allocator, data: []const u8, pos: *usize) !?[]const u8 {
     const len = try readVarint(data, pos);
-    if (isNegativeOne(len) or len == 0) return null;
+    if (isNegativeOne(len)) return null;
+    if (len == 0) return try allocator.alloc(u8, 0);
     const end = pos.* + @as(usize, @intCast(len));
     if (end > data.len) return error.EndOfStream;
     const result = try allocator.dupe(u8, data[pos.*..end]);
@@ -103,11 +102,42 @@ pub fn serializeRequest(allocator: std.mem.Allocator, payload: HttpRequestPayloa
 
     try list.appendSlice(allocator, &payload.request_id);
     try appendString(&list, allocator, payload.method);
-    try appendOptionalBytes(&list, allocator, payload.path);
+
+    // Default empty/null path to "/" to match Go/TS behavior
+    const path = if (payload.path) |p| (if (p.len == 0) "/" else p) else "/";
+    try appendString(&list, allocator, path);
+
     try appendOptionalBytes(&list, allocator, payload.search);
 
-    try appendVarint(&list, allocator, @intCast(payload.headers.len));
+    // Filter headers: only include content-type, authorization, and x-bsv-* (excluding x-bsv-auth-*)
+    // Then sort alphabetically by name, and normalize content-type by stripping params after ";"
+    var filtered_headers: std.ArrayList(Header) = .empty;
+    defer filtered_headers.deinit(allocator);
+
     for (payload.headers) |header| {
+        const name = header.name;
+        const include = std.mem.eql(u8, name, "content-type") or
+            std.mem.eql(u8, name, "authorization") or
+            (std.mem.startsWith(u8, name, "x-bsv-") and !std.mem.startsWith(u8, name, "x-bsv-auth"));
+        if (include) {
+            var value = header.value;
+            if (std.mem.eql(u8, name, "content-type")) {
+                if (std.mem.indexOfScalar(u8, value, ';')) |semi| {
+                    value = value[0..semi];
+                }
+            }
+            try filtered_headers.append(allocator, .{ .name = name, .value = value });
+        }
+    }
+
+    std.mem.sort(Header, filtered_headers.items, {}, struct {
+        fn lessThan(_: void, a: Header, b: Header) bool {
+            return std.mem.order(u8, a.name, b.name) == .lt;
+        }
+    }.lessThan);
+
+    try appendVarint(&list, allocator, @intCast(filtered_headers.items.len));
+    for (filtered_headers.items) |header| {
         try appendString(&list, allocator, header.name);
         try appendString(&list, allocator, header.value);
     }
@@ -312,7 +342,8 @@ test "request round-trip without path or search" {
     }
 
     try std.testing.expectEqualStrings("DELETE", result.method);
-    try std.testing.expect(result.path == null);
+    // null path is serialized as "/" to match Go/TS behavior
+    try std.testing.expectEqualStrings("/", result.path.?);
     try std.testing.expect(result.search == null);
     try std.testing.expect(result.body == null);
 }
@@ -420,4 +451,196 @@ test "response round-trip with multiple headers" {
     try std.testing.expectEqualStrings("x-bsv-topic", result.headers[1].name);
     try std.testing.expectEqualStrings("x-bsv-version", result.headers[2].name);
     try std.testing.expectEqualStrings("<html></html>", result.body.?);
+}
+
+test "query string gets ? prefix preserved in round-trip" {
+    const allocator = std.testing.allocator;
+
+    var req_id: [32]u8 = undefined;
+    @memset(&req_id, 0x11);
+
+    const payload = HttpRequestPayload{
+        .request_id = req_id,
+        .method = "GET",
+        .path = "/search",
+        .search = "?q=hello",
+        .headers = &.{},
+        .body = null,
+    };
+
+    const serialized = try serializeRequest(allocator, payload);
+    defer allocator.free(serialized);
+
+    const result = try deserializeRequest(allocator, serialized);
+    defer {
+        allocator.free(result.method);
+        if (result.path) |p| allocator.free(p);
+        if (result.search) |s| allocator.free(s);
+        allocator.free(result.headers);
+        if (result.body) |b| allocator.free(b);
+    }
+
+    try std.testing.expectEqualStrings("?q=hello", result.search.?);
+}
+
+test "empty path defaults to /" {
+    const allocator = std.testing.allocator;
+
+    var req_id: [32]u8 = undefined;
+    @memset(&req_id, 0x22);
+
+    // Test null path
+    const payload_null = HttpRequestPayload{
+        .request_id = req_id,
+        .method = "GET",
+        .path = null,
+        .search = null,
+        .headers = &.{},
+        .body = null,
+    };
+
+    const serialized1 = try serializeRequest(allocator, payload_null);
+    defer allocator.free(serialized1);
+
+    const result1 = try deserializeRequest(allocator, serialized1);
+    defer {
+        allocator.free(result1.method);
+        if (result1.path) |p| allocator.free(p);
+        if (result1.search) |s| allocator.free(s);
+        allocator.free(result1.headers);
+        if (result1.body) |b| allocator.free(b);
+    }
+
+    try std.testing.expectEqualStrings("/", result1.path.?);
+
+    // Test empty string path
+    const payload_empty = HttpRequestPayload{
+        .request_id = req_id,
+        .method = "GET",
+        .path = "",
+        .search = null,
+        .headers = &.{},
+        .body = null,
+    };
+
+    const serialized2 = try serializeRequest(allocator, payload_empty);
+    defer allocator.free(serialized2);
+
+    const result2 = try deserializeRequest(allocator, serialized2);
+    defer {
+        allocator.free(result2.method);
+        if (result2.path) |p| allocator.free(p);
+        if (result2.search) |s| allocator.free(s);
+        allocator.free(result2.headers);
+        if (result2.body) |b| allocator.free(b);
+    }
+
+    try std.testing.expectEqualStrings("/", result2.path.?);
+}
+
+test "empty body serialized as varint(0) not varint(-1)" {
+    const allocator = std.testing.allocator;
+
+    var req_id: [32]u8 = undefined;
+    @memset(&req_id, 0x33);
+
+    // Empty body (not null) should round-trip as empty, not null
+    const payload = HttpRequestPayload{
+        .request_id = req_id,
+        .method = "POST",
+        .path = "/api",
+        .search = null,
+        .headers = &.{},
+        .body = "",
+    };
+
+    const serialized = try serializeRequest(allocator, payload);
+    defer allocator.free(serialized);
+
+    const result = try deserializeRequest(allocator, serialized);
+    defer {
+        allocator.free(result.method);
+        if (result.path) |p| allocator.free(p);
+        if (result.search) |s| allocator.free(s);
+        allocator.free(result.headers);
+        if (result.body) |b| allocator.free(b);
+    }
+
+    // body should be non-null empty slice, not null
+    try std.testing.expect(result.body != null);
+    try std.testing.expectEqual(@as(usize, 0), result.body.?.len);
+
+    // null body should round-trip as null
+    const payload_null = HttpRequestPayload{
+        .request_id = req_id,
+        .method = "GET",
+        .path = "/api",
+        .search = null,
+        .headers = &.{},
+        .body = null,
+    };
+
+    const serialized2 = try serializeRequest(allocator, payload_null);
+    defer allocator.free(serialized2);
+
+    const result2 = try deserializeRequest(allocator, serialized2);
+    defer {
+        allocator.free(result2.method);
+        if (result2.path) |p| allocator.free(p);
+        if (result2.search) |s| allocator.free(s);
+        allocator.free(result2.headers);
+        if (result2.body) |b| allocator.free(b);
+    }
+
+    try std.testing.expect(result2.body == null);
+}
+
+test "header filtering and sorting" {
+    const allocator = std.testing.allocator;
+
+    var req_id: [32]u8 = undefined;
+    @memset(&req_id, 0x44);
+
+    const headers = [_]Header{
+        .{ .name = "x-bsv-auth-token", .value = "secret" }, // excluded: x-bsv-auth-*
+        .{ .name = "x-bsv-topic", .value = "ordinals" }, // included
+        .{ .name = "content-type", .value = "application/json; charset=utf-8" }, // included, normalized
+        .{ .name = "accept", .value = "text/html" }, // excluded: not in allowed list
+        .{ .name = "authorization", .value = "Bearer abc" }, // included
+        .{ .name = "x-bsv-custom", .value = "val" }, // included
+    };
+
+    const payload = HttpRequestPayload{
+        .request_id = req_id,
+        .method = "POST",
+        .path = "/api",
+        .search = null,
+        .headers = &headers,
+        .body = "{}",
+    };
+
+    const serialized = try serializeRequest(allocator, payload);
+    defer allocator.free(serialized);
+
+    const result = try deserializeRequest(allocator, serialized);
+    defer {
+        allocator.free(result.method);
+        if (result.path) |p| allocator.free(p);
+        if (result.search) |s| allocator.free(s);
+        for (result.headers) |h| {
+            allocator.free(h.name);
+            allocator.free(h.value);
+        }
+        allocator.free(result.headers);
+        if (result.body) |b| allocator.free(b);
+    }
+
+    // Should have 4 headers (excluded: x-bsv-auth-token, accept), sorted alphabetically
+    try std.testing.expectEqual(@as(usize, 4), result.headers.len);
+    try std.testing.expectEqualStrings("authorization", result.headers[0].name);
+    try std.testing.expectEqualStrings("Bearer abc", result.headers[0].value);
+    try std.testing.expectEqualStrings("content-type", result.headers[1].name);
+    try std.testing.expectEqualStrings("application/json", result.headers[1].value); // charset stripped
+    try std.testing.expectEqualStrings("x-bsv-custom", result.headers[2].name);
+    try std.testing.expectEqualStrings("x-bsv-topic", result.headers[3].name);
 }

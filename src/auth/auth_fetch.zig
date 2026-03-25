@@ -51,7 +51,8 @@ pub const AuthFetch = struct {
         const headers = [_]Header{
             .{ .name = "content-type", .value = "application/json" },
         };
-        return self.doRequest("POST", url, body, &headers);
+        const effective_body: []const u8 = if (body.len == 0) "{}" else body;
+        return self.doRequest("POST", url, effective_body, &headers);
     }
 
     pub fn postBinary(self: *AuthFetch, url: []const u8, body: []const u8) !AuthResponse {
@@ -81,12 +82,21 @@ pub const AuthFetch = struct {
         var request_id: [payload_mod.request_id_len]u8 = undefined;
         crypto_random.bytes(&request_id);
 
+        // Prepend "?" to query string to match Go/TS URL.search behavior
+        const search_with_prefix: ?[]const u8 = if (parsed.query_str) |q| blk: {
+            const prefixed = try self.allocator.alloc(u8, q.len + 1);
+            prefixed[0] = '?';
+            @memcpy(prefixed[1..], q);
+            break :blk prefixed;
+        } else null;
+        defer if (search_with_prefix) |s| self.allocator.free(s);
+
         // Build payload
         const req_payload = HttpRequestPayload{
             .request_id = request_id,
             .method = method,
-            .path = parsed.path_str,
-            .search = parsed.query_str,
+            .path = parsed.path_str orelse "/",
+            .search = search_with_prefix,
             .headers = headers orelse &.{},
             .body = body,
         };
