@@ -6,3 +6,4 @@ pub const ChaintracksClient = @import("chaintracks.zig").ChaintracksClient;
 pub const txo = @import("txo.zig");
 pub const TxoClient = txo.TxoClient;
 pub const IndexedOutput = txo.IndexedOutput;
+pub const OneSatServices = @import("onesat.zig").OneSatServices;
