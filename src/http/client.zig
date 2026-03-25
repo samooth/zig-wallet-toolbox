@@ -47,8 +47,7 @@ fn doRequest(
 }
 
 fn parseJson(allocator: std.mem.Allocator, raw: []u8) !std.json.Value {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    _ = &parsed;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
     return parsed.value;
 }
 
