@@ -59,10 +59,11 @@ pub const TxoClient = struct {
         const body = try serializeStringArray(self.allocator, outpoints);
         defer self.allocator.free(body);
 
-        var headers = std.BoundedArray(std.http.Header, 2){};
-        headers.appendAssumeCapacity(.{ .name = "Content-Type", .value = "application/json" });
+        const headers = [_]std.http.Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+        };
 
-        const result = try http.postJson(self.allocator, url, body, headers.constSlice());
+        const result = try http.postJson(self.allocator, url, body, &headers);
         if (result.status != .ok) return error.HttpRequestFailed;
 
         const arr = switch (result.body) {
@@ -70,7 +71,8 @@ pub const TxoClient = struct {
             else => return error.UnexpectedJsonType,
         };
 
-        var outputs = try std.ArrayList(IndexedOutput).initCapacity(self.allocator, arr.items.len);
+        var outputs: std.ArrayList(IndexedOutput) = .empty;
+        try outputs.ensureTotalCapacity(self.allocator, arr.items.len);
         for (arr.items) |item| {
             switch (item) {
                 .object => outputs.appendAssumeCapacity(try parseIndexedOutput(item)),
@@ -93,8 +95,8 @@ pub const TxoClient = struct {
     }
 
     fn serializeStringArray(allocator: std.mem.Allocator, strings: []const []const u8) ![]u8 {
-        var buf = std.ArrayList(u8).init(allocator);
-        var writer = buf.writer();
+        var buf: std.ArrayList(u8) = .empty;
+        var writer = buf.writer(allocator);
         try writer.writeByte('[');
         for (strings, 0..) |s, i| {
             if (i > 0) try writer.writeByte(',');
@@ -103,7 +105,7 @@ pub const TxoClient = struct {
             try writer.writeByte('"');
         }
         try writer.writeByte(']');
-        return buf.toOwnedSlice();
+        return buf.toOwnedSlice(allocator);
     }
 
     fn parseIndexedOutput(json: std.json.Value) !IndexedOutput {

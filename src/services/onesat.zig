@@ -96,7 +96,8 @@ pub const OneSatServices = struct {
     }
 
     pub fn postBeef(self: *OneSatServices, allocator: std.mem.Allocator, beef: []const u8, txids: []const []const u8) ![]types.PostBeefResult {
-        var results = try std.ArrayList(types.PostBeefResult).initCapacity(allocator, txids.len);
+        var results: std.ArrayList(types.PostBeefResult) = .empty;
+        try results.ensureTotalCapacity(allocator, txids.len);
 
         for (txids) |txid| {
             const status = self.arcade.submitTransaction(beef, .{}) catch {
@@ -144,7 +145,7 @@ pub const OneSatServices = struct {
             });
         }
 
-        return results.toOwnedSlice();
+        return results.toOwnedSlice(allocator);
     }
 
     pub fn getBeefForTxid(self: *OneSatServices, allocator: std.mem.Allocator, txid: []const u8) ![]u8 {
@@ -153,7 +154,8 @@ pub const OneSatServices = struct {
     }
 
     pub fn getStatusForTxids(self: *OneSatServices, allocator: std.mem.Allocator, txids: []const []const u8) !types.GetStatusForTxidsResult {
-        var results = try std.ArrayList(types.TxStatusDetail).initCapacity(allocator, txids.len);
+        var results: std.ArrayList(types.TxStatusDetail) = .empty;
+        try results.ensureTotalCapacity(allocator, txids.len);
         var current_height: ?u32 = null;
 
         for (txids) |txid| {
@@ -168,7 +170,7 @@ pub const OneSatServices = struct {
         return .{
             .name = service_name,
             .status = .success,
-            .results = results.toOwnedSlice() catch &.{},
+            .results = results.toOwnedSlice(allocator) catch &.{},
         };
     }
 

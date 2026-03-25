@@ -28,16 +28,20 @@ pub const ArcadeClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/tx", .{ self.host, base_path });
         defer self.allocator.free(url);
 
-        var headers = std.BoundedArray(std.http.Header, 4){};
-        headers.appendAssumeCapacity(.{ .name = "Content-Type", .value = "application/octet-stream" });
+        var headers_buf: [4]std.http.Header = undefined;
+        var header_count: usize = 0;
+        headers_buf[header_count] = .{ .name = "Content-Type", .value = "application/octet-stream" };
+        header_count += 1;
         if (opts.callback_url) |cb_url| {
-            headers.appendAssumeCapacity(.{ .name = "X-CallbackUrl", .value = cb_url });
+            headers_buf[header_count] = .{ .name = "X-CallbackUrl", .value = cb_url };
+            header_count += 1;
         }
         if (opts.callback_token) |cb_token| {
-            headers.appendAssumeCapacity(.{ .name = "X-CallbackToken", .value = cb_token });
+            headers_buf[header_count] = .{ .name = "X-CallbackToken", .value = cb_token };
+            header_count += 1;
         }
 
-        const result = try http.postJson(self.allocator, url, beef, headers.constSlice());
+        const result = try http.postJson(self.allocator, url, beef, headers_buf[0..header_count]);
         if (result.status != .ok) return error.HttpRequestFailed;
 
         return parseStatusResponse(result.body);
@@ -76,10 +80,10 @@ pub const ArcadeClient = struct {
             } else null,
             .competing_txs = if (obj.get("competingTxs")) |v| switch (v) {
                 .array => |arr| blk: {
-                    var txs = std.ArrayList([]const u8).init(std.heap.page_allocator);
+                    var txs: std.ArrayList([]const u8) = .empty;
                     for (arr.items) |item| {
                         switch (item) {
-                            .string => |s| try txs.append(s),
+                            .string => |s| try txs.append(std.heap.page_allocator, s),
                             else => {},
                         }
                     }

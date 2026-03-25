@@ -54,7 +54,7 @@ pub const ChaintracksClient = struct {
         const result = http.getJson(self.allocator, url, &.{}) catch return null;
         if (result.status != .ok) return null;
 
-        return parseBlockHeader(result.body);
+        return try parseBlockHeader(result.body);
     }
 
     pub fn findHeaderForBlockHash(self: *ChaintracksClient, hash: []const u8) !?types.BlockHeader {
@@ -64,7 +64,7 @@ pub const ChaintracksClient = struct {
         const result = http.getJson(self.allocator, url, &.{}) catch return null;
         if (result.status != .ok) return null;
 
-        return parseBlockHeader(result.body);
+        return try parseBlockHeader(result.body);
     }
 
     fn parseBlockHeader(json: std.json.Value) !types.BlockHeader {
