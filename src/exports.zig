@@ -81,21 +81,32 @@ export fn bsvwallet_create_remote(
     const chain_val: wallet_mod.Chain = if (chain == 0) .main else .@"test";
     const url_slice = backend_url[0..backend_url_len];
 
+    // Build the wallet storage URL: {backend}/1sat/wallet
+    const wallet_url = std.fmt.allocPrint(alloc, "{s}/1sat/wallet", .{url_slice}) catch return ERR_ALLOC;
+
     // Create auth client for this private key
-    const af_ptr = alloc.create(auth.AuthFetch) catch return ERR_ALLOC;
+    const af_ptr = alloc.create(auth.AuthFetch) catch {
+        alloc.free(wallet_url);
+        return ERR_ALLOC;
+    };
     af_ptr.* = auth.AuthFetch.init(alloc, pk);
 
-    // Create remote storage client pointing at the backend
+    // Create remote storage client pointing at the wallet storage endpoint
     const remote_ptr = alloc.create(storage.RemoteStorageClient) catch {
         af_ptr.deinit();
         alloc.destroy(af_ptr);
+        alloc.free(wallet_url);
         return ERR_ALLOC;
     };
-    remote_ptr.* = storage.RemoteStorageClient.init(alloc, af_ptr, url_slice);
+    remote_ptr.* = storage.RemoteStorageClient.init(alloc, af_ptr, wallet_url);
 
     // Set up storage manager with the remote provider as active
     var mgr = storage.WalletStorageManager.init(alloc);
     mgr.setActive(remote_ptr.storageProvider());
+
+    // Set up OneSat services for chain queries
+    const onesat_chain: services.OneSatServices.Chain = if (chain == 0) .main else .@"test";
+    var onesat = services.OneSatServices.init(alloc, onesat_chain, url_slice);
 
     const wallet_ptr = alloc.create(wallet_mod.Wallet) catch {
         alloc.destroy(remote_ptr);
@@ -106,7 +117,7 @@ export fn bsvwallet_create_remote(
     wallet_ptr.* = wallet_mod.Wallet.init(alloc, .{
         .private_key = pk,
         .chain = chain_val,
-        .wallet_services = undefined,
+        .wallet_services = onesat.walletServices(),
         .storage_manager = mgr,
     }) catch {
         alloc.destroy(wallet_ptr);
