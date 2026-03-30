@@ -79,7 +79,11 @@ export fn bsvwallet_create_remote(
 ) c_int {
     const pk = ec.PrivateKey.fromBytes(privkey[0..32].*) catch return ERR_INVALID_INPUT;
     const chain_val: wallet_mod.Chain = if (chain == 0) .main else .@"test";
-    const url_slice = backend_url[0..backend_url_len];
+    var url_slice = backend_url[0..backend_url_len];
+    // Strip trailing slash to avoid double-slash in URL
+    while (url_slice.len > 0 and url_slice[url_slice.len - 1] == '/') {
+        url_slice = url_slice[0 .. url_slice.len - 1];
+    }
 
     // Build the wallet storage URL: {backend}/1sat/wallet
     const wallet_url = std.fmt.allocPrint(alloc, "{s}/1sat/wallet", .{url_slice}) catch return ERR_ALLOC;
@@ -260,7 +264,8 @@ export fn bsvwallet_list_outputs(
         .basket = basket,
         .limit = limit,
         .offset = offset,
-    }) catch {
+    }) catch |err| {
+        std.log.err("bsvwallet_list_outputs: {s}", .{@errorName(err)});
         if (basket_owned) |b| alloc.free(b);
         return ERR_WALLET;
     };

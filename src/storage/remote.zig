@@ -31,6 +31,11 @@ pub const RemoteStorageClient = struct {
         var response = try self.auth_fetch.postJson(self.url, request_body);
         defer response.deinit();
 
+        log.info("RPC {s} -> status={d} body_len={d}", .{ method, response.status, response.body.len });
+        if (response.body.len > 0 and response.body.len < 500) {
+            log.info("RPC response body: {s}", .{response.body});
+        }
+
         var parsed = try json_rpc.parseResponse(allocator, response.body);
 
         if (parsed.@"error") |rpc_err| {
