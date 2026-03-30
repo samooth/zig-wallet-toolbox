@@ -220,6 +220,7 @@ export fn bsvwallet_list_outputs(
     const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
 
     var basket: ?[]const u8 = null;
+    var basket_owned: ?[]u8 = null;
     var limit: ?u32 = null;
     var offset: ?u32 = null;
 
@@ -229,7 +230,11 @@ export fn bsvwallet_list_outputs(
 
         if (parsed.value == .object) {
             if (parsed.value.object.get("basket")) |b| {
-                if (b == .string) basket = b.string;
+                if (b == .string) {
+                    // Must dupe — parsed will be freed before wallet.listOutputs uses the slice
+                    basket_owned = alloc.dupe(u8, b.string) catch null;
+                    basket = basket_owned;
+                }
             }
             if (parsed.value.object.get("limit")) |l| {
                 if (l == .integer) limit = @intCast(l.integer);
@@ -244,7 +249,11 @@ export fn bsvwallet_list_outputs(
         .basket = basket,
         .limit = limit,
         .offset = offset,
-    }) catch return ERR_WALLET;
+    }) catch {
+        if (basket_owned) |b| alloc.free(b);
+        return ERR_WALLET;
+    };
+    if (basket_owned) |b| alloc.free(b);
 
     return jsonStringify(result, out_buf, out_len);
 }
