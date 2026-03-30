@@ -324,6 +324,82 @@ export fn bsvwallet_sign_data(
     return copyToOut(sig_slice, out_sig, out_sig_len);
 }
 
+/// Get the wallet's balance (sum of spendable outputs).
+/// Writes confirmed satoshis to out_confirmed, unconfirmed to out_unconfirmed.
+export fn bsvwallet_get_balance(
+    handle: ?*anyopaque,
+    out_confirmed: *i64,
+    out_unconfirmed: *i64,
+) c_int {
+    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const balance = wallet.getBalance() catch return ERR_WALLET;
+    out_confirmed.* = balance.confirmed;
+    out_unconfirmed.* = balance.unconfirmed;
+    return OK;
+}
+
+/// Get balance without a pre-existing wallet handle. Creates a temporary
+/// remote wallet connection, fetches the balance, and tears down.
+/// privkey: 32-byte private key, backend_url + backend_url_len: remote URL.
+export fn bsvwallet_get_balance_remote(
+    privkey: [*c]const u8,
+    chain: c_int,
+    backend_url: [*c]const u8,
+    backend_url_len: usize,
+    out_confirmed: *i64,
+    out_unconfirmed: *i64,
+) c_int {
+    var handle: ?*anyopaque = null;
+    const rc = bsvwallet_create_remote(privkey, chain, backend_url, backend_url_len, &handle);
+    if (rc != OK) return rc;
+    defer _ = bsvwallet_destroy(handle);
+
+    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const balance = wallet.getBalance() catch return ERR_WALLET;
+    out_confirmed.* = balance.confirmed;
+    out_unconfirmed.* = balance.unconfirmed;
+    return OK;
+}
+
+/// Derive a protocol-scoped public key (BRC-42/43) from an existing wallet handle.
+/// protocol_id + protocol_id_len: protocol name.
+/// key_id + key_id_len: key identifier.
+/// security_level: 0, 1, or 2.
+/// for_self: true to derive for self, false for counterparty.
+/// counterparty + counterparty_len: hex pubkey (ignored if for_self, pass 0 length).
+/// out_pubkey: 66-byte buffer for hex-encoded compressed pubkey.
+/// out_pubkey_len: set to 66 on success.
+export fn bsvwallet_get_derived_public_key(
+    handle: ?*anyopaque,
+    protocol_id: [*c]const u8,
+    protocol_id_len: usize,
+    key_id: [*c]const u8,
+    key_id_len: usize,
+    security_level: u8,
+    for_self: bool,
+    counterparty: [*c]const u8,
+    counterparty_len: usize,
+    out_pubkey: [*c]u8,
+    out_pubkey_len: *usize,
+) c_int {
+    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+
+    const cp_slice: ?[]const u8 = if (counterparty_len > 0)
+        counterparty[0..counterparty_len]
+    else
+        null;
+
+    const result = wallet.getDerivedPublicKey(.{
+        .protocol_id = protocol_id[0..protocol_id_len],
+        .key_id = key_id[0..key_id_len],
+        .security_level = security_level,
+        .for_self = for_self,
+        .counterparty = cp_slice,
+    }) catch return ERR_WALLET;
+
+    return copyToOut(&result.public_key, out_pubkey, out_pubkey_len);
+}
+
 // ── Authenticated HTTP (BRC-100) ───────────────────────────────────────
 
 /// Opaque auth client handle for C consumers.

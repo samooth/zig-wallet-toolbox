@@ -76,6 +76,33 @@ int bsvwallet_sign_data(bsvwallet_t handle,
                          const char *data, size_t data_len,
                          unsigned char *out_sig, size_t *out_sig_len);
 
+/* Get wallet balance (sum of spendable outputs).
+ * Writes confirmed satoshis to out_confirmed, unconfirmed to out_unconfirmed. */
+int bsvwallet_get_balance(bsvwallet_t handle,
+                           long long *out_confirmed,
+                           long long *out_unconfirmed);
+
+/* Get balance without a pre-existing handle. Creates a temporary remote
+ * wallet connection, fetches balance, and tears down.
+ * privkey: 32-byte key, backend_url + len: remote URL. */
+int bsvwallet_get_balance_remote(const unsigned char *privkey, int chain,
+                                  const char *backend_url, size_t backend_url_len,
+                                  long long *out_confirmed,
+                                  long long *out_unconfirmed);
+
+/* Derive a protocol-scoped public key (BRC-42/43).
+ * protocol_id + len: protocol name, key_id + len: key identifier.
+ * security_level: 0-2. for_self: true for own key, false for counterparty.
+ * counterparty + len: hex pubkey (0 len if for_self).
+ * out_pubkey >= 66 bytes for hex-encoded compressed pubkey. */
+int bsvwallet_get_derived_public_key(bsvwallet_t handle,
+                                      const char *protocol_id, size_t protocol_id_len,
+                                      const char *key_id, size_t key_id_len,
+                                      unsigned char security_level,
+                                      int for_self,
+                                      const char *counterparty, size_t counterparty_len,
+                                      char *out_pubkey, size_t *out_pubkey_len);
+
 /* ── Authenticated HTTP (BRC-100) ─────────────────────────────────── */
 
 /* Opaque auth client handle */

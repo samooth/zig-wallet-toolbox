@@ -50,7 +50,7 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 
 ## Key Management
 
-- [ ] Protocol-based key derivation within wallet context (BRC-42/43)
+- [x] Protocol-based key derivation within wallet context (BRC-42/43)
 - [ ] `PrivilegedKeyManager` equivalent with Shamir secret sharing
 - [ ] Wallet-level encrypt/decrypt operations
 
@@ -59,7 +59,7 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 - [ ] `internalizeAction` (wired but untested)
 - [ ] `listFailedActions`
 - [ ] `relinquishOutput`
-- [ ] `getBalance` (sum spendable outputs)
+- [x] `getBalance` (sum spendable outputs)
 - [ ] `requestSyncChunk` / sync state management
 - [ ] Pending sign actions local repo
 
