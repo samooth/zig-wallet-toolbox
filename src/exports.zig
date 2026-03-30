@@ -9,6 +9,7 @@ const toolbox = @import("zig-wallet-toolbox");
 const wallet_mod = toolbox.wallet;
 const storage = toolbox.storage;
 const services = toolbox.services;
+const auth = toolbox.auth;
 
 const alloc = std.heap.page_allocator;
 
@@ -18,6 +19,8 @@ const ERR_WALLET: c_int = -2;
 const ERR_JSON: c_int = -3;
 const ERR_ALLOC: c_int = -4;
 const ERR_NOT_INIT: c_int = -5;
+const ERR_BUFFER_TOO_SMALL: c_int = -6;
+const ERR_HTTP: c_int = -7;
 
 /// Opaque wallet handle for C consumers.
 const WalletHandle = *wallet_mod.Wallet;
@@ -241,4 +244,94 @@ export fn bsvwallet_sign_data(
     const sig = wallet.createSignature(data[0..data_len]) catch return ERR_WALLET;
     const sig_slice = sig.asSlice();
     return copyToOut(sig_slice, out_sig, out_sig_len);
+}
+
+// ── Authenticated HTTP (BRC-100) ───────────────────────────────────────
+
+/// Opaque auth client handle for C consumers.
+const AuthHandle = *auth.AuthFetch;
+
+/// Create an authenticated HTTP client from a 32-byte private key.
+/// Returns an opaque handle via out_handle.
+export fn bsvauth_create(
+    privkey: [*c]const u8,
+    out_handle: *?*anyopaque,
+) c_int {
+    const pk = ec.PrivateKey.fromBytes(privkey[0..32].*) catch return ERR_INVALID_INPUT;
+
+    const af_ptr = alloc.create(auth.AuthFetch) catch return ERR_ALLOC;
+    af_ptr.* = auth.AuthFetch.init(alloc, pk);
+
+    out_handle.* = af_ptr;
+    return OK;
+}
+
+/// Destroy an authenticated HTTP client and free its resources.
+export fn bsvauth_destroy(handle: ?*anyopaque) c_int {
+    const af: AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    af.deinit();
+    alloc.destroy(af);
+    return OK;
+}
+
+/// Make an authenticated GET request.
+/// out_body must be pre-allocated by the caller; out_body_len is set to the
+/// actual response body length. Returns ERR_BUFFER_TOO_SMALL (-6) if the
+/// response body exceeds *out_body_len (which is read as the buffer capacity
+/// on entry).
+export fn bsvauth_get(
+    handle: ?*anyopaque,
+    url: [*c]const u8,
+    url_len: usize,
+    out_status: *u16,
+    out_body: [*c]u8,
+    out_body_len: *usize,
+) c_int {
+    const af: AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const url_slice = url[0..url_len];
+
+    var resp = af.get(url_slice) catch return ERR_HTTP;
+    defer resp.deinit();
+
+    out_status.* = resp.status;
+
+    const capacity = out_body_len.*;
+    if (resp.body.len > capacity) {
+        out_body_len.* = resp.body.len;
+        return ERR_BUFFER_TOO_SMALL;
+    }
+
+    return copyToOut(resp.body, out_body, out_body_len);
+}
+
+/// Make an authenticated POST request with a JSON body.
+/// out_body must be pre-allocated by the caller; out_body_len is set to the
+/// actual response body length. Returns ERR_BUFFER_TOO_SMALL (-6) if the
+/// response body exceeds *out_body_len.
+export fn bsvauth_post_json(
+    handle: ?*anyopaque,
+    url: [*c]const u8,
+    url_len: usize,
+    body: [*c]const u8,
+    body_len: usize,
+    out_status: *u16,
+    out_body: [*c]u8,
+    out_body_len: *usize,
+) c_int {
+    const af: AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const url_slice = url[0..url_len];
+    const body_slice = body[0..body_len];
+
+    var resp = af.postJson(url_slice, body_slice) catch return ERR_HTTP;
+    defer resp.deinit();
+
+    out_status.* = resp.status;
+
+    const capacity = out_body_len.*;
+    if (resp.body.len > capacity) {
+        out_body_len.* = resp.body.len;
+        return ERR_BUFFER_TOO_SMALL;
+    }
+
+    return copyToOut(resp.body, out_body, out_body_len);
 }

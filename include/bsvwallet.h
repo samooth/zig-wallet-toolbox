@@ -11,6 +11,8 @@
  *   -3  ERR_JSON
  *   -4  ERR_ALLOC
  *   -5  ERR_NOT_INIT
+ *   -6  ERR_BUFFER_TOO_SMALL
+ *   -7  ERR_HTTP
  */
 
 #ifndef BSVWALLET_H
@@ -67,6 +69,34 @@ int bsvwallet_list_actions(bsvwallet_t handle,
 int bsvwallet_sign_data(bsvwallet_t handle,
                          const char *data, size_t data_len,
                          unsigned char *out_sig, size_t *out_sig_len);
+
+/* ── Authenticated HTTP (BRC-100) ─────────────────────────────────── */
+
+/* Opaque auth client handle */
+typedef void* bsvauth_t;
+
+/* Create an authenticated HTTP client from 32-byte private key. */
+int bsvauth_create(const unsigned char *privkey, bsvauth_t *out_handle);
+
+/* Destroy auth client and free resources. */
+int bsvauth_destroy(bsvauth_t handle);
+
+/* Authenticated GET request.
+ * out_body_len: on entry, capacity of out_body; on exit, actual body length.
+ * Returns -6 (ERR_BUFFER_TOO_SMALL) if response exceeds capacity. */
+int bsvauth_get(bsvauth_t handle,
+                const char *url, size_t url_len,
+                unsigned short *out_status,
+                char *out_body, size_t *out_body_len);
+
+/* Authenticated POST with JSON body.
+ * out_body_len: on entry, capacity of out_body; on exit, actual body length.
+ * Returns -6 (ERR_BUFFER_TOO_SMALL) if response exceeds capacity. */
+int bsvauth_post_json(bsvauth_t handle,
+                       const char *url, size_t url_len,
+                       const char *body, size_t body_len,
+                       unsigned short *out_status,
+                       char *out_body, size_t *out_body_len);
 
 #ifdef __cplusplus
 }
