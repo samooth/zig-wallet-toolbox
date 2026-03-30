@@ -67,6 +67,59 @@ export fn bsvwallet_create(
     return OK;
 }
 
+/// Create a wallet connected to a remote 1sat-stack backend.
+/// privkey: 32-byte private key, backend_url: null-terminated URL string.
+/// This sets up authenticated BRC-100 communication with the backend.
+export fn bsvwallet_create_remote(
+    privkey: [*c]const u8,
+    chain: c_int,
+    backend_url: [*c]const u8,
+    backend_url_len: usize,
+    out_handle: *?*anyopaque,
+) c_int {
+    const pk = ec.PrivateKey.fromBytes(privkey[0..32].*) catch return ERR_INVALID_INPUT;
+    const chain_val: wallet_mod.Chain = if (chain == 0) .main else .@"test";
+    const url_slice = backend_url[0..backend_url_len];
+
+    // Create auth client for this private key
+    const af_ptr = alloc.create(auth.AuthFetch) catch return ERR_ALLOC;
+    af_ptr.* = auth.AuthFetch.init(alloc, pk);
+
+    // Create remote storage client pointing at the backend
+    const remote_ptr = alloc.create(storage.RemoteStorageClient) catch {
+        af_ptr.deinit();
+        alloc.destroy(af_ptr);
+        return ERR_ALLOC;
+    };
+    remote_ptr.* = storage.RemoteStorageClient.init(alloc, af_ptr, url_slice);
+
+    // Set up storage manager with the remote provider as active
+    var mgr = storage.WalletStorageManager.init(alloc);
+    mgr.setActive(remote_ptr.storageProvider());
+
+    const wallet_ptr = alloc.create(wallet_mod.Wallet) catch {
+        alloc.destroy(remote_ptr);
+        af_ptr.deinit();
+        alloc.destroy(af_ptr);
+        return ERR_ALLOC;
+    };
+    wallet_ptr.* = wallet_mod.Wallet.init(alloc, .{
+        .private_key = pk,
+        .chain = chain_val,
+        .wallet_services = undefined,
+        .storage_manager = mgr,
+    }) catch {
+        alloc.destroy(wallet_ptr);
+        alloc.destroy(remote_ptr);
+        af_ptr.deinit();
+        alloc.destroy(af_ptr);
+        return ERR_WALLET;
+    };
+
+    out_handle.* = wallet_ptr;
+    return OK;
+}
+
 /// Destroy a wallet and free its resources.
 export fn bsvwallet_destroy(handle: ?*anyopaque) c_int {
     const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));

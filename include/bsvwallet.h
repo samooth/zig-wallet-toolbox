@@ -32,6 +32,12 @@ typedef void* bsvwallet_t;
 /* Create a wallet from 32-byte private key. chain: 0=mainnet, 1=testnet. */
 int bsvwallet_create(const unsigned char *privkey, int chain, bsvwallet_t *out_handle);
 
+/* Create a wallet connected to a remote 1sat-stack backend.
+ * Sets up BRC-103/104 authenticated communication. */
+int bsvwallet_create_remote(const unsigned char *privkey, int chain,
+                             const char *backend_url, size_t backend_url_len,
+                             bsvwallet_t *out_handle);
+
 /* Destroy wallet and free resources. */
 int bsvwallet_destroy(bsvwallet_t handle);
 
