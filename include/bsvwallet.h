@@ -103,6 +103,42 @@ int bsvwallet_get_derived_public_key(bsvwallet_t handle,
                                       const char *counterparty, size_t counterparty_len,
                                       char *out_pubkey, size_t *out_pubkey_len);
 
+/* ── Remote transaction building ──────────────────────────────────── */
+
+/* Create a wallet action without a pre-existing handle. Creates a
+ * temporary remote wallet, calls createAction, and tears down.
+ * args_json: CreateActionArgs JSON string, e.g.:
+ *   {"description":"...","outputs":[{"lockingScript":"hex","satoshis":N}]}
+ * out_buf >= 8192 bytes for result JSON. out_buf_len: capacity in, length out. */
+int bsvwallet_create_action_remote(const unsigned char *privkey, int chain,
+                                    const char *backend_url, size_t backend_url_len,
+                                    const char *args_json, size_t args_json_len,
+                                    char *out_buf, size_t *out_buf_len);
+
+/* Sign a wallet action without a pre-existing handle. Creates a
+ * temporary remote wallet, calls signAction, and tears down.
+ * args_json: SignActionArgs JSON string, e.g.:
+ *   {"reference":"...","spends":{"0":{"unlockingScript":"hex"}}}
+ * out_buf >= 8192 bytes for result JSON. out_buf_len: capacity in, length out. */
+int bsvwallet_sign_action_remote(const unsigned char *privkey, int chain,
+                                  const char *backend_url, size_t backend_url_len,
+                                  const char *args_json, size_t args_json_len,
+                                  char *out_buf, size_t *out_buf_len);
+
+/* Create an ordinal inscription and broadcast without a pre-existing handle.
+ * Derives a P2PKH key, builds the inscription envelope locking script,
+ * and calls createAction with a 1-sat output.
+ * content + content_len: raw inscription content bytes.
+ * content_type + ct_len: MIME type (e.g. "text/plain").
+ * app_name + name_len: optional label (pass NULL/0 to skip).
+ * out_buf >= 8192 bytes for result JSON. out_buf_len: capacity in, length out. */
+int bsvwallet_inscribe_remote(const unsigned char *privkey, int chain,
+                               const char *backend_url, size_t backend_url_len,
+                               const unsigned char *content, size_t content_len,
+                               const char *content_type, size_t ct_len,
+                               const char *app_name, size_t name_len,
+                               char *out_buf, size_t *out_buf_len);
+
 /* ── Authenticated HTTP (BRC-100) ─────────────────────────────────── */
 
 /* Opaque auth client handle */

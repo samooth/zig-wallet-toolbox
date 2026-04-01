@@ -5,8 +5,14 @@
 const std = @import("std");
 const bsvz = @import("bsvz");
 const ec = bsvz.primitives.ec;
+const hex = bsvz.primitives.hex;
+const crypto_hash = bsvz.crypto.hash;
+const script_builder = bsvz.script.builder;
+const Opcode = bsvz.script.opcode.Opcode;
+const p2pkh = bsvz.script.templates.p2pkh;
 const toolbox = @import("zig-wallet-toolbox");
 const wallet_mod = toolbox.wallet;
+const signer_types = toolbox.signer.types;
 const storage = toolbox.storage;
 const services = toolbox.services;
 const auth = toolbox.auth;
@@ -488,4 +494,361 @@ export fn bsvauth_post_json(
     }
 
     return copyToOut(resp.body, out_body, out_body_len);
+}
+
+// ── Remote transaction building ────────────────────────────────────────
+
+/// Create a wallet action without a pre-existing handle. Creates a temporary
+/// remote wallet connection, calls createAction, and tears down.
+/// args_json is a JSON string: {"description":"...","outputs":[{"lockingScript":"hex","satoshis":N}],...}
+/// Result JSON is written to out_buf.
+export fn bsvwallet_create_action_remote(
+    privkey: [*c]const u8,
+    chain: c_int,
+    backend_url: [*c]const u8,
+    backend_url_len: usize,
+    args_json: [*c]const u8,
+    args_json_len: usize,
+    out_buf: [*c]u8,
+    out_buf_len: *usize,
+) c_int {
+    var handle: ?*anyopaque = null;
+    const rc = bsvwallet_create_remote(privkey, chain, backend_url, backend_url_len, &handle);
+    if (rc != OK) return rc;
+    defer _ = bsvwallet_destroy(handle);
+
+    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const json_str = args_json[0..args_json_len];
+
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_str, .{}) catch return ERR_JSON;
+    defer parsed.deinit();
+
+    const root = if (parsed.value == .object) parsed.value.object else return ERR_JSON;
+
+    const description = blk: {
+        if (root.get("description")) |d| {
+            if (d == .string) break :blk d.string;
+        }
+        break :blk "";
+    };
+
+    // Parse outputs array
+    const outputs_val = root.get("outputs") orelse return ERR_JSON;
+    const outputs_arr = if (outputs_val == .array) outputs_val.array.items else return ERR_JSON;
+
+    // Build ActionOutput slice on page_allocator
+    const outputs = alloc.alloc(signer_types.ActionOutput, outputs_arr.len) catch return ERR_ALLOC;
+    defer alloc.free(outputs);
+
+    for (outputs_arr, 0..) |item, i| {
+        if (item != .object) return ERR_JSON;
+        const obj = item.object;
+
+        const locking_script = blk: {
+            if (obj.get("lockingScript")) |ls| {
+                if (ls == .string) break :blk ls.string;
+            }
+            return ERR_JSON;
+        };
+        const satoshis: u64 = blk: {
+            if (obj.get("satoshis")) |s| {
+                if (s == .integer) break :blk @intCast(s.integer);
+            }
+            return ERR_JSON;
+        };
+
+        const out_desc: ?[]const u8 = blk: {
+            if (obj.get("description")) |d| {
+                if (d == .string) break :blk d.string;
+            }
+            break :blk null;
+        };
+        const basket: ?[]const u8 = blk: {
+            if (obj.get("basket")) |b| {
+                if (b == .string) break :blk b.string;
+            }
+            break :blk null;
+        };
+
+        outputs[i] = .{
+            .locking_script = locking_script,
+            .satoshis = satoshis,
+            .description = out_desc,
+            .basket = basket,
+        };
+    }
+
+    // Parse optional labels
+    var labels_buf: [64][]const u8 = undefined;
+    var labels_slice: ?[]const []const u8 = null;
+    if (root.get("labels")) |labels_val| {
+        if (labels_val == .array) {
+            const larr = labels_val.array.items;
+            const count = @min(larr.len, labels_buf.len);
+            for (larr[0..count], 0..) |lbl, i| {
+                if (lbl == .string) {
+                    labels_buf[i] = lbl.string;
+                } else {
+                    labels_buf[i] = "";
+                }
+            }
+            labels_slice = labels_buf[0..count];
+        }
+    }
+
+    // Parse optional options
+    var options: signer_types.CreateActionOptions = .{};
+    if (root.get("options")) |opts_val| {
+        if (opts_val == .object) {
+            const opts = opts_val.object;
+            if (opts.get("noSend")) |v| {
+                if (v == .bool) options.no_send = v.bool;
+            }
+            if (opts.get("signAndProcess")) |v| {
+                if (v == .bool) options.sign_and_process = v.bool;
+            }
+            if (opts.get("acceptDelayedBroadcast")) |v| {
+                if (v == .bool) options.accept_delayed_broadcast = v.bool;
+            }
+            if (opts.get("returnTXIDOnly")) |v| {
+                if (v == .bool) options.return_txid_only = v.bool;
+            }
+            if (opts.get("randomizeOutputs")) |v| {
+                if (v == .bool) options.randomize_outputs = v.bool;
+            }
+        }
+    }
+
+    const result = wallet.createAction(.{
+        .description = description,
+        .outputs = outputs,
+        .labels = labels_slice,
+        .options = options,
+    }) catch return ERR_WALLET;
+
+    return jsonStringify(result.raw, out_buf, out_buf_len);
+}
+
+/// Sign a wallet action without a pre-existing handle. Creates a temporary
+/// remote wallet connection, calls signAction, and tears down.
+/// args_json: {"reference":"...","spends":{"0":{"unlockingScript":"hex"},...},...}
+/// Result JSON is written to out_buf.
+export fn bsvwallet_sign_action_remote(
+    privkey: [*c]const u8,
+    chain: c_int,
+    backend_url: [*c]const u8,
+    backend_url_len: usize,
+    args_json: [*c]const u8,
+    args_json_len: usize,
+    out_buf: [*c]u8,
+    out_buf_len: *usize,
+) c_int {
+    var handle: ?*anyopaque = null;
+    const rc = bsvwallet_create_remote(privkey, chain, backend_url, backend_url_len, &handle);
+    if (rc != OK) return rc;
+    defer _ = bsvwallet_destroy(handle);
+
+    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const json_str = args_json[0..args_json_len];
+
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_str, .{}) catch return ERR_JSON;
+    defer parsed.deinit();
+
+    const root = if (parsed.value == .object) parsed.value.object else return ERR_JSON;
+
+    const reference = blk: {
+        if (root.get("reference")) |r| {
+            if (r == .string) break :blk r.string;
+        }
+        break :blk "";
+    };
+
+    // Parse spends object: {"0": {"unlockingScript":"hex", ...}, ...}
+    const spends_val = root.get("spends") orelse return ERR_JSON;
+    var spends_count: usize = 0;
+    if (spends_val == .object) {
+        spends_count = spends_val.object.count();
+    } else {
+        return ERR_JSON;
+    }
+
+    const spends = alloc.alloc(signer_types.SignActionSpend, spends_count) catch return ERR_ALLOC;
+    defer alloc.free(spends);
+
+    var spend_idx: usize = 0;
+    var it = spends_val.object.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const val = entry.value_ptr.*;
+
+        if (val != .object) return ERR_JSON;
+        const spend_obj = val.object;
+
+        const input_index: u32 = std.fmt.parseInt(u32, key, 10) catch return ERR_JSON;
+
+        const unlocking_script = blk: {
+            if (spend_obj.get("unlockingScript")) |us| {
+                if (us == .string) break :blk us.string;
+            }
+            return ERR_JSON;
+        };
+
+        const sequence_number: ?u32 = blk: {
+            if (spend_obj.get("sequenceNumber")) |sn| {
+                if (sn == .integer) break :blk @intCast(sn.integer);
+            }
+            break :blk null;
+        };
+
+        spends[spend_idx] = .{
+            .input_index = input_index,
+            .unlocking_script = unlocking_script,
+            .sequence_number = sequence_number,
+        };
+        spend_idx += 1;
+    }
+
+    // Parse optional options
+    var options: signer_types.SignActionOptions = .{};
+    if (root.get("options")) |opts_val| {
+        if (opts_val == .object) {
+            const opts = opts_val.object;
+            if (opts.get("acceptDelayedBroadcast")) |v| {
+                if (v == .bool) options.accept_delayed_broadcast = v.bool;
+            }
+            if (opts.get("returnTXIDOnly")) |v| {
+                if (v == .bool) options.return_txid_only = v.bool;
+            }
+            if (opts.get("noSend")) |v| {
+                if (v == .bool) options.no_send = v.bool;
+            }
+        }
+    }
+
+    const result = wallet.signAction(.{
+        .reference = reference,
+        .spends = spends[0..spend_idx],
+        .options = options,
+    }) catch return ERR_WALLET;
+
+    return jsonStringify(result.raw, out_buf, out_buf_len);
+}
+
+/// Create an ordinal inscription and broadcast it without a pre-existing handle.
+/// Builds a P2PKH + inscription envelope locking script, then calls createAction.
+/// content + content_len: raw inscription content bytes.
+/// content_type + ct_len: MIME type (e.g. "text/plain").
+/// app_name + name_len: optional application name for labeling (0 len to skip).
+/// Result JSON with txid/reference is written to out_buf.
+export fn bsvwallet_inscribe_remote(
+    privkey: [*c]const u8,
+    chain: c_int,
+    backend_url: [*c]const u8,
+    backend_url_len: usize,
+    content: [*c]const u8,
+    content_len: usize,
+    content_type: [*c]const u8,
+    ct_len: usize,
+    app_name: [*c]const u8,
+    name_len: usize,
+    out_buf: [*c]u8,
+    out_buf_len: *usize,
+) c_int {
+    var handle: ?*anyopaque = null;
+    const rc = bsvwallet_create_remote(privkey, chain, backend_url, backend_url_len, &handle);
+    if (rc != OK) return rc;
+    defer _ = bsvwallet_destroy(handle);
+
+    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+
+    // Derive an inscription key via BRC-42/43 protocol "1sat-ordinals"
+    const derived = wallet.getDerivedPublicKey(.{
+        .protocol_id = "1sat-ordinals",
+        .key_id = "1",
+        .security_level = 0,
+        .for_self = true,
+    }) catch return ERR_WALLET;
+
+    // Decode the derived hex pubkey to raw bytes
+    var pubkey_raw: [33]u8 = undefined;
+    _ = hex.decodeInto(&derived.public_key, &pubkey_raw) catch return ERR_INVALID_INPUT;
+
+    // Hash160 to get the pubkey hash for P2PKH prefix
+    const pubkey_hash = crypto_hash.hash160(&pubkey_raw);
+    const p2pkh_prefix = p2pkh.encode(pubkey_hash);
+
+    // Build inscription envelope: P2PKH prefix + OP_FALSE OP_IF "ord" ... OP_ENDIF
+    const content_slice = content[0..content_len];
+    const ct_slice = content_type[0..ct_len];
+
+    var script_buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer script_buf.deinit(alloc);
+
+    // Append P2PKH prefix
+    script_buf.appendSlice(alloc, &p2pkh_prefix) catch return ERR_ALLOC;
+
+    // OP_FALSE OP_IF
+    script_builder.appendOpcodes(&script_buf, alloc, &.{
+        @intFromEnum(Opcode.OP_0),
+        @intFromEnum(Opcode.OP_IF),
+    }) catch return ERR_ALLOC;
+
+    // Push "ord" marker
+    script_builder.appendPushData(&script_buf, alloc, &.{ 0x6f, 0x72, 0x64 }) catch return ERR_ALLOC;
+
+    // OP_1 (content type field)
+    script_builder.appendOpcodes(&script_buf, alloc, &.{@intFromEnum(Opcode.OP_1)}) catch return ERR_ALLOC;
+
+    // Push content type
+    script_builder.appendPushData(&script_buf, alloc, ct_slice) catch return ERR_ALLOC;
+
+    // OP_0 (content field)
+    script_builder.appendOpcodes(&script_buf, alloc, &.{@intFromEnum(Opcode.OP_0)}) catch return ERR_ALLOC;
+
+    // Push content (split into 520-byte chunks if needed)
+    const MAX_PUSH: usize = 520;
+    if (content_slice.len <= MAX_PUSH) {
+        script_builder.appendPushData(&script_buf, alloc, content_slice) catch return ERR_ALLOC;
+    } else {
+        var offset: usize = 0;
+        while (offset < content_slice.len) {
+            const end = @min(offset + MAX_PUSH, content_slice.len);
+            script_builder.appendPushData(&script_buf, alloc, content_slice[offset..end]) catch return ERR_ALLOC;
+            offset = end;
+        }
+    }
+
+    // OP_ENDIF
+    script_builder.appendOpcodes(&script_buf, alloc, &.{@intFromEnum(Opcode.OP_ENDIF)}) catch return ERR_ALLOC;
+
+    // Hex-encode the locking script
+    const script_hex = alloc.alloc(u8, script_buf.items.len * 2) catch return ERR_ALLOC;
+    defer alloc.free(script_hex);
+    _ = hex.encodeLower(script_buf.items, script_hex) catch return ERR_ALLOC;
+
+    // Build the label (use app_name if provided)
+    var label_buf: [1][]const u8 = undefined;
+    var labels_slice: ?[]const []const u8 = null;
+    if (name_len > 0) {
+        label_buf[0] = app_name[0..name_len];
+        labels_slice = &label_buf;
+    }
+
+    // Build outputs: single 1-sat inscription output
+    var outputs: [1]signer_types.ActionOutput = .{.{
+        .locking_script = script_hex,
+        .satoshis = 1,
+        .description = "1sat ordinal inscription",
+        .basket = "ordinals",
+    }};
+
+    const description = if (name_len > 0) app_name[0..name_len] else "inscribe";
+
+    const result = wallet.createAction(.{
+        .description = description,
+        .outputs = &outputs,
+        .labels = labels_slice,
+    }) catch return ERR_WALLET;
+
+    return jsonStringify(result.raw, out_buf, out_buf_len);
 }
