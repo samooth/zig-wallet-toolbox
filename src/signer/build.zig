@@ -59,10 +59,10 @@ pub fn extractSignableData(create_result: std.json.Value) !SignableData {
 test "extractSignableData from valid response" {
     const allocator = std.testing.allocator;
 
-    var obj = std.json.ObjectMap.init(allocator);
-    defer obj.deinit();
-    try obj.put("referenceNumber", .{ .string = "ref-123" });
-    try obj.put("inputBeef", .{ .string = "0100beef..." });
+    var obj: std.json.ObjectMap = .empty;
+    defer obj.deinit(allocator);
+    try obj.put(allocator,"referenceNumber", .{ .string = "ref-123" });
+    try obj.put(allocator,"inputBeef", .{ .string = "0100beef..." });
 
     const result = try extractSignableData(.{ .object = obj });
     try std.testing.expectEqualStrings("ref-123", result.reference);
@@ -74,9 +74,9 @@ test "extractSignableData from valid response" {
 test "extractSignableData missing reference" {
     const allocator = std.testing.allocator;
 
-    var obj = std.json.ObjectMap.init(allocator);
-    defer obj.deinit();
-    try obj.put("inputBeef", .{ .string = "0100beef..." });
+    var obj: std.json.ObjectMap = .empty;
+    defer obj.deinit(allocator);
+    try obj.put(allocator,"inputBeef", .{ .string = "0100beef..." });
 
     const result = extractSignableData(.{ .object = obj });
     try std.testing.expectError(error.MissingReference, result);

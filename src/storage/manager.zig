@@ -11,7 +11,7 @@ pub const WalletStorageManager = struct {
         return .{
             .allocator = allocator,
             .active = null,
-            .backups = .{},
+            .backups = .empty,
         };
     }
 

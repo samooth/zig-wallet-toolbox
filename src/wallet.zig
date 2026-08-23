@@ -27,26 +27,26 @@ pub const ListOutputsArgs = struct {
     offset: ?u32 = null,
 
     pub fn toJson(self: ListOutputsArgs, allocator: std.mem.Allocator) !std.json.Value {
-        var obj = std.json.ObjectMap.init(allocator);
+        var obj: std.json.ObjectMap = .empty;
 
         if (self.basket) |basket| {
-            try obj.put("basket", .{ .string = basket });
+            try obj.put(allocator,"basket", .{ .string = basket });
         }
         if (self.tags) |tags| {
             var arr = std.json.Array.init(allocator);
             for (tags) |tag| {
                 try arr.append(.{ .string = tag });
             }
-            try obj.put("tags", .{ .array = arr });
+            try obj.put(allocator,"tags", .{ .array = arr });
         }
         if (self.spendable) |spendable| {
-            try obj.put("spendable", .{ .bool = spendable });
+            try obj.put(allocator,"spendable", .{ .bool = spendable });
         }
         if (self.limit) |limit| {
-            try obj.put("limit", .{ .integer = @intCast(limit) });
+            try obj.put(allocator,"limit", .{ .integer = @intCast(limit) });
         }
         if (self.offset) |offset| {
-            try obj.put("offset", .{ .integer = @intCast(offset) });
+            try obj.put(allocator,"offset", .{ .integer = @intCast(offset) });
         }
 
         return .{ .object = obj };
@@ -59,20 +59,20 @@ pub const ListActionsArgs = struct {
     offset: ?u32 = null,
 
     pub fn toJson(self: ListActionsArgs, allocator: std.mem.Allocator) !std.json.Value {
-        var obj = std.json.ObjectMap.init(allocator);
+        var obj: std.json.ObjectMap = .empty;
 
         if (self.labels) |labels| {
             var arr = std.json.Array.init(allocator);
             for (labels) |label| {
                 try arr.append(.{ .string = label });
             }
-            try obj.put("labels", .{ .array = arr });
+            try obj.put(allocator,"labels", .{ .array = arr });
         }
         if (self.limit) |limit| {
-            try obj.put("limit", .{ .integer = @intCast(limit) });
+            try obj.put(allocator,"limit", .{ .integer = @intCast(limit) });
         }
         if (self.offset) |offset| {
-            try obj.put("offset", .{ .integer = @intCast(offset) });
+            try obj.put(allocator,"offset", .{ .integer = @intCast(offset) });
         }
 
         return .{ .object = obj };
@@ -155,8 +155,8 @@ pub const Wallet = struct {
     }
 
     pub fn abortAction(self: *Wallet, reference: []const u8) !std.json.Value {
-        var obj = std.json.ObjectMap.init(self.allocator);
-        try obj.put("reference", .{ .string = reference });
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(self.allocator,"reference", .{ .string = reference });
         const args_json: std.json.Value = .{ .object = obj };
         return self.storage_manager.abortAction(self.allocator, self.authId(), args_json);
     }
@@ -227,7 +227,7 @@ pub const Wallet = struct {
 
 test "Wallet init derives identity key" {
     const allocator = std.testing.allocator;
-    const private_key = try ec.PrivateKey.fromBytes([_]u8{0x01} ** 32);
+    const private_key = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(0x01)));
 
     const mgr = storage.WalletStorageManager.init(allocator);
 
@@ -246,7 +246,7 @@ test "Wallet init derives identity key" {
 }
 
 test "Wallet createSignature produces valid DER" {
-    const private_key = try ec.PrivateKey.fromBytes([_]u8{0x01} ** 32);
+    const private_key = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(0x01)));
     const allocator = std.testing.allocator;
 
     const mgr = storage.WalletStorageManager.init(allocator);
@@ -266,7 +266,7 @@ test "Wallet createSignature produces valid DER" {
 }
 
 test "Wallet verifySignature roundtrip" {
-    const private_key = try ec.PrivateKey.fromBytes([_]u8{0x01} ** 32);
+    const private_key = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(0x01)));
     const allocator = std.testing.allocator;
 
     const mgr = storage.WalletStorageManager.init(allocator);
@@ -287,7 +287,7 @@ test "Wallet verifySignature roundtrip" {
 }
 
 test "Wallet getDerivedPublicKey for self" {
-    const private_key = try ec.PrivateKey.fromBytes([_]u8{0x01} ** 32);
+    const private_key = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(0x01)));
     const allocator = std.testing.allocator;
 
     const mgr = storage.WalletStorageManager.init(allocator);
@@ -313,8 +313,8 @@ test "Wallet getDerivedPublicKey for self" {
 
 test "Wallet getDerivedPublicKey for counterparty" {
     const allocator = std.testing.allocator;
-    const private_key = try ec.PrivateKey.fromBytes([_]u8{0x01} ** 32);
-    const cp_key = try ec.PrivateKey.fromBytes([_]u8{0x02} ** 32);
+    const private_key = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(0x01)));
+    const cp_key = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(0x02)));
     const cp_pub = try cp_key.publicKey();
     var cp_hex: [66]u8 = undefined;
     _ = try hex.encodeLower(&cp_pub.toCompressedSec1(), &cp_hex);

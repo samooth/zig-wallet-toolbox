@@ -25,7 +25,7 @@ pub const HttpResponsePayload = struct {
     body: ?[]const u8,
 };
 
-const negative_one: [9]u8 = .{0xff} ** 9;
+const negative_one: [9]u8 = @as([9]u8, @splat(0xff));
 
 const ByteList = std.ArrayList(u8);
 

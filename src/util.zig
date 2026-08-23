@@ -51,10 +51,14 @@ test "nowSecs is plausible" {
 }
 
 /// Replacement for `std.testing.refAllDeclsRecursive`, removed in Zig 0.16.
+/// Compatible with 0.16 (Declaration structs) and 0.17+ (plain name strings).
 pub fn refAllDeclsRecursive(comptime T: type) void {
     if (!builtin.is_test) return;
     inline for (comptime std.meta.declarations(T)) |decl| {
-        const D = @field(T, decl.name);
+        const D = if (comptime @typeInfo(@TypeOf(decl)) == .pointer)
+            @field(T, decl)
+        else
+            @field(T, decl.name);
         if (comptime @TypeOf(D) == type) {
             switch (@typeInfo(D)) {
                 .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursive(D),

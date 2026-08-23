@@ -14,7 +14,7 @@ pub const SessionManager = struct {
 
     pub fn init(allocator: std.mem.Allocator) SessionManager {
         return .{
-            .sessions = .{},
+            .sessions = .empty,
             .allocator = allocator,
         };
     }

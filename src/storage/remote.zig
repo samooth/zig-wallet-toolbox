@@ -53,10 +53,10 @@ pub const RemoteStorageClient = struct {
     }
 
     fn buildAuthJson(self: *RemoteStorageClient, auth: types.AuthId) !std.json.Value {
-        var obj = std.json.ObjectMap.init(self.allocator);
-        try obj.put("identityKey", .{ .string = auth.identity_key });
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(self.allocator,"identityKey", .{ .string = auth.identity_key });
         if (auth.storage_identity_key) |sik| {
-            try obj.put("storageIdentityKey", .{ .string = sik });
+            try obj.put(self.allocator,"storageIdentityKey", .{ .string = sik });
         }
         return .{ .object = obj };
     }

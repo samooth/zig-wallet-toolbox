@@ -5,9 +5,9 @@ const json_rpc = @import("zig-wallet-toolbox").http.json_rpc;
 test "buildRequest produces valid JSON-RPC 2.0" {
     const allocator = testing.allocator;
 
-    var params_map = std.json.ObjectMap.init(allocator);
-    defer params_map.deinit();
-    try params_map.put("key", .{ .string = "value" });
+    var params_map: std.json.ObjectMap = .empty;
+    defer params_map.deinit(allocator);
+    try params_map.put(allocator,"key", .{ .string = "value" });
 
     const bytes = try json_rpc.buildRequest(allocator, "test.method", .{ .object = params_map }, 1);
     defer allocator.free(bytes);
@@ -62,9 +62,9 @@ test "parseResponse handles error" {
 test "buildRequest and parseResponse round-trip" {
     const allocator = testing.allocator;
 
-    var params_map = std.json.ObjectMap.init(allocator);
-    defer params_map.deinit();
-    try params_map.put("foo", .{ .string = "bar" });
+    var params_map: std.json.ObjectMap = .empty;
+    defer params_map.deinit(allocator);
+    try params_map.put(allocator,"foo", .{ .string = "bar" });
 
     const req_bytes = try json_rpc.buildRequest(allocator, "echo", .{ .object = params_map }, 99);
     defer allocator.free(req_bytes);
