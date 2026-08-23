@@ -75,7 +75,7 @@ pub fn buildRequest(allocator: std.mem.Allocator, method: []const u8, params: st
         .id = id,
     };
 
-    var out: std.io.Writer.Allocating = .init(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
     var w: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
     try w.write(req);
     return try out.toOwnedSlice();

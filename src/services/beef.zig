@@ -4,13 +4,15 @@ const http = @import("../http/client.zig");
 pub const BeefClient = struct {
     host: []const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     const base_path = "/1sat/beef";
 
-    pub fn init(allocator: std.mem.Allocator, host: []const u8) BeefClient {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8) BeefClient {
         return .{
             .host = host,
             .allocator = allocator,
+            .io = io,
         };
     }
 
@@ -22,7 +24,7 @@ pub const BeefClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/{s}", .{ self.host, base_path, txid });
         defer self.allocator.free(url);
 
-        const result = try http.getBinary(self.allocator, url, &.{});
+        const result = try http.getBinary(self.allocator, self.io, url, &.{});
         if (result.status != .ok) {
             self.allocator.free(result.body);
             return error.HttpRequestFailed;
@@ -35,7 +37,7 @@ pub const BeefClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/{s}/tx", .{ self.host, base_path, txid });
         defer self.allocator.free(url);
 
-        const result = try http.getBinary(self.allocator, url, &.{});
+        const result = try http.getBinary(self.allocator, self.io, url, &.{});
         if (result.status != .ok) {
             self.allocator.free(result.body);
             return error.HttpRequestFailed;
@@ -48,7 +50,7 @@ pub const BeefClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/{s}/proof", .{ self.host, base_path, txid });
         defer self.allocator.free(url);
 
-        const result = try http.getBinary(self.allocator, url, &.{});
+        const result = try http.getBinary(self.allocator, self.io, url, &.{});
         if (result.status != .ok) {
             self.allocator.free(result.body);
             return error.HttpRequestFailed;

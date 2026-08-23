@@ -13,12 +13,13 @@ pub const BinaryResponse = struct {
 
 fn doRequest(
     allocator: std.mem.Allocator,
+    io: std.Io,
     method: std.http.Method,
     url: []const u8,
     extra_headers: []const std.http.Header,
     payload: ?[]const u8,
 ) !BinaryResponse {
-    var client: std.http.Client = .{ .allocator = allocator };
+    var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
@@ -45,7 +46,7 @@ fn doRequest(
     const decompress_buf = try allocator.alloc(u8, 1 << 16); // 64KB
     defer allocator.free(decompress_buf);
     const body_reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
-    const body = try body_reader.allocRemaining(allocator, std.io.Limit.limited(4 * 1024 * 1024));
+    const body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(4 * 1024 * 1024));
 
     return .{
         .status = resp.head.status,
@@ -60,10 +61,11 @@ fn parseJson(allocator: std.mem.Allocator, raw: []u8) !std.json.Value {
 
 pub fn getJson(
     allocator: std.mem.Allocator,
+    io: std.Io,
     url: []const u8,
     extra_headers: []const std.http.Header,
 ) !JsonResponse {
-    const result = try doRequest(allocator, .GET, url, extra_headers, null);
+    const result = try doRequest(allocator, io, .GET, url, extra_headers, null);
     const value = try parseJson(allocator, result.body);
     return .{
         .status = result.status,
@@ -74,11 +76,12 @@ pub fn getJson(
 
 pub fn postJson(
     allocator: std.mem.Allocator,
+    io: std.Io,
     url: []const u8,
     body_bytes: []const u8,
     extra_headers: []const std.http.Header,
 ) !JsonResponse {
-    const result = try doRequest(allocator, .POST, url, extra_headers, body_bytes);
+    const result = try doRequest(allocator, io, .POST, url, extra_headers, body_bytes);
     const value = try parseJson(allocator, result.body);
     return .{
         .status = result.status,
@@ -89,17 +92,19 @@ pub fn postJson(
 
 pub fn getBinary(
     allocator: std.mem.Allocator,
+    io: std.Io,
     url: []const u8,
     extra_headers: []const std.http.Header,
 ) !BinaryResponse {
-    return doRequest(allocator, .GET, url, extra_headers, null);
+    return doRequest(allocator, io, .GET, url, extra_headers, null);
 }
 
 pub fn postBinary(
     allocator: std.mem.Allocator,
+    io: std.Io,
     url: []const u8,
     body_bytes: []const u8,
     extra_headers: []const std.http.Header,
 ) !BinaryResponse {
-    return doRequest(allocator, .POST, url, extra_headers, body_bytes);
+    return doRequest(allocator, io, .POST, url, extra_headers, body_bytes);
 }

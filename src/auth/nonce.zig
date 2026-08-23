@@ -3,6 +3,7 @@ const bsvz = @import("bsvz");
 const ec = bsvz.primitives.ec;
 const brc43 = bsvz.primitives.brc43;
 const crypto_hash = bsvz.crypto.hash;
+const util = @import("../util.zig");
 
 const PrivateKey = ec.PrivateKey;
 const PublicKey = ec.PublicKey;
@@ -31,7 +32,7 @@ const protocol_name = "server hmac";
 /// When counterparty is null, uses the private key's own public key (self).
 pub fn createNonce(allocator: std.mem.Allocator, private_key: PrivateKey, counterparty: ?PublicKey) ![]const u8 {
     var random_bytes: [random_len]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
+    util.randomBytes(&random_bytes);
 
     const hmac_result = try deriveNonceHmac(allocator, private_key, counterparty, &random_bytes);
 

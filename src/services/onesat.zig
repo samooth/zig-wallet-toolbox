@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const util = @import("../util.zig");
 const WalletServices = @import("interface.zig").WalletServices;
 const ChaintracksClient = @import("chaintracks.zig").ChaintracksClient;
 const BeefClient = @import("beef.zig").BeefClient;
@@ -22,7 +23,7 @@ pub const OneSatServices = struct {
     const testnet_host = "https://testnet.api.1sat.app";
     const service_name = "1sat-api";
 
-    pub fn init(allocator: std.mem.Allocator, chain: Chain, host: ?[]const u8) OneSatServices {
+    pub fn init(allocator: std.mem.Allocator, chain: Chain, host: ?[]const u8, io: std.Io) OneSatServices {
         const h = host orelse switch (chain) {
             .main => mainnet_host,
             .@"test" => testnet_host,
@@ -33,10 +34,10 @@ pub const OneSatServices = struct {
             .host = h,
             .host_owned = owned,
             .chain = chain,
-            .chaintracks = ChaintracksClient.init(allocator, h),
-            .beef = BeefClient.init(allocator, h),
-            .arcade = ArcadeClient.init(allocator, h),
-            .txo = TxoClient.init(allocator, h),
+            .chaintracks = ChaintracksClient.init(allocator, io, h),
+            .beef = BeefClient.init(allocator, io, h),
+            .arcade = ArcadeClient.init(allocator, io, h),
+            .txo = TxoClient.init(allocator, io, h),
         };
     }
 
@@ -271,8 +272,8 @@ pub const OneSatServices = struct {
         const block_limit: u32 = 500_000_000;
 
         if (n_lock_time >= block_limit) {
-            const now: u64 = @intCast(std.time.timestamp());
-            return n_lock_time < @as(u32, @intCast(now));
+            const now = util.nowSecs();
+            return n_lock_time < now;
         }
 
         const height = try self.chaintracks.currentHeight();

@@ -26,5 +26,5 @@ pub const serializeResponse = payload.serializeResponse;
 pub const deserializeResponse = payload.deserializeResponse;
 
 test {
-    @import("std").testing.refAllDeclsRecursive(@This());
+    @import("../util.zig").refAllDeclsRecursive(@This());
 }

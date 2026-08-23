@@ -11,6 +11,7 @@ const session_mod = @import("session.zig");
 const message_mod = @import("message.zig");
 const payload_mod = @import("payload.zig");
 const transport_mod = @import("transport.zig");
+const util = @import("../util.zig");
 
 const PrivateKey = ec.PrivateKey;
 const PublicKey = ec.PublicKey;
@@ -31,7 +32,7 @@ pub const Peer = struct {
     session_manager: SessionManager,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, private_key: PrivateKey, base_url: []const u8) !Peer {
+    pub fn init(allocator: std.mem.Allocator, private_key: PrivateKey, base_url: []const u8, io: std.Io) !Peer {
         const pub_key = try private_key.publicKey();
         var identity_hex: [66]u8 = undefined;
         _ = pub_key.toDerHex(&identity_hex);
@@ -39,7 +40,7 @@ pub const Peer = struct {
         return .{
             .private_key = private_key,
             .identity_key_hex = identity_hex,
-            .transport = SimplifiedHttpTransport.init(allocator, base_url),
+            .transport = SimplifiedHttpTransport.init(allocator, io, base_url),
             .session_manager = SessionManager.init(allocator),
             .allocator = allocator,
         };
@@ -108,7 +109,7 @@ pub const Peer = struct {
             .session_nonce = client_nonce,
             .peer_nonce = null,
             .peer_identity_key = null,
-            .last_update = std.time.milliTimestamp(),
+            .last_update = util.nowMilli(),
         });
 
         // Build initialRequest
@@ -171,7 +172,7 @@ pub const Peer = struct {
             .session_nonce = owned_client_nonce,
             .peer_nonce = owned_server_nonce,
             .peer_identity_key = owned_server_identity,
-            .last_update = std.time.milliTimestamp(),
+            .last_update = util.nowMilli(),
         });
 
         return self.session_manager.getSession(client_nonce) orelse return error.SessionNotFound;
@@ -277,7 +278,8 @@ test "concatDecodedNonces" {
 test "Peer init and deinit" {
     const allocator = std.testing.allocator;
     const priv = try PrivateKey.generate();
-    var peer = try Peer.init(allocator, priv, "http://localhost:8080");
+    var threaded = std.Io.Threaded.init_single_threaded;
+    var peer = try Peer.init(allocator, priv, "http://localhost:8080", threaded.io());
     defer peer.deinit();
 
     try std.testing.expectEqual(@as(usize, 66), peer.identity_key_hex.len);

@@ -27,8 +27,13 @@ test "e2e: remote wallet against api.1sat.app" {
     // 1. Generate a fresh random private key
     const private_key = try PrivateKey.generate();
 
+    // 1b. Create the Io runtime required by Zig 0.16 HTTP APIs
+    var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // 2. Set up AuthFetch (handles BRC-103/104 mutual auth)
-    var auth_fetch = AuthFetch.init(allocator, private_key);
+    var auth_fetch = AuthFetch.init(allocator, io, private_key);
     defer auth_fetch.deinit();
 
     // 3. Create RemoteStorageClient pointing at 1sat-stack wallet endpoint
@@ -40,7 +45,7 @@ test "e2e: remote wallet against api.1sat.app" {
     storage_mgr.setActive(storage_client.storageProvider());
 
     // 5. Create OneSatServices for mainnet
-    var onesat = OneSatServices.init(allocator, .main, host);
+    var onesat = OneSatServices.init(allocator, .main, host, io);
     defer onesat.deinit();
 
     // 6. Build the Wallet

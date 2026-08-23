@@ -5,13 +5,15 @@ const types = @import("types.zig");
 pub const ChaintracksClient = struct {
     host: []const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     const base_path = "/1sat/chaintracks";
 
-    pub fn init(allocator: std.mem.Allocator, host: []const u8) ChaintracksClient {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8) ChaintracksClient {
         return .{
             .host = host,
             .allocator = allocator,
+            .io = io,
         };
     }
 
@@ -23,7 +25,7 @@ pub const ChaintracksClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/tip", .{ self.host, base_path });
         defer self.allocator.free(url);
 
-        const result = try http.getJson(self.allocator, url, &.{});
+        const result = try http.getJson(self.allocator, self.io, url, &.{});
         if (result.status != .ok) return error.HttpRequestFailed;
 
         return @intCast(result.body.object.get("height").?.integer);
@@ -38,7 +40,7 @@ pub const ChaintracksClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/headers?height={d}&count=1", .{ self.host, base_path, height });
         defer self.allocator.free(url);
 
-        const result = try http.getBinary(self.allocator, url, &.{});
+        const result = try http.getBinary(self.allocator, self.io, url, &.{});
         if (result.status != .ok) {
             self.allocator.free(result.body);
             return error.HttpRequestFailed;
@@ -51,7 +53,7 @@ pub const ChaintracksClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/header/height/{d}", .{ self.host, base_path, height });
         defer self.allocator.free(url);
 
-        const result = http.getJson(self.allocator, url, &.{}) catch return null;
+        const result = http.getJson(self.allocator, self.io, url, &.{}) catch return null;
         if (result.status != .ok) return null;
 
         return try parseBlockHeader(result.body);
@@ -61,7 +63,7 @@ pub const ChaintracksClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/header/hash/{s}", .{ self.host, base_path, hash });
         defer self.allocator.free(url);
 
-        const result = http.getJson(self.allocator, url, &.{}) catch return null;
+        const result = http.getJson(self.allocator, self.io, url, &.{}) catch return null;
         if (result.status != .ok) return null;
 
         return try parseBlockHeader(result.body);

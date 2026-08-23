@@ -1,7 +1,7 @@
 const std = @import("std");
 const bsvz = @import("bsvz");
 const ec = bsvz.primitives.ec;
-const crypto_random = std.crypto.random;
+const util = @import("../util.zig");
 
 const peer_mod = @import("peer.zig");
 const payload_mod = @import("payload.zig");
@@ -23,12 +23,14 @@ pub const AuthResponse = struct {
 
 pub const AuthFetch = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     private_key: PrivateKey,
     peers: std.StringHashMap(Peer),
 
-    pub fn init(allocator: std.mem.Allocator, private_key: PrivateKey) AuthFetch {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, private_key: PrivateKey) AuthFetch {
         return .{
             .allocator = allocator,
+            .io = io,
             .private_key = private_key,
             .peers = std.StringHashMap(Peer).init(allocator),
         };
@@ -80,7 +82,7 @@ pub const AuthFetch = struct {
 
         // Generate request ID
         var request_id: [payload_mod.request_id_len]u8 = undefined;
-        crypto_random.bytes(&request_id);
+        util.randomBytes(&request_id);
 
         // Prepend "?" to query string to match Go/TS URL.search behavior
         const search_with_prefix: ?[]const u8 = if (parsed.query_str) |q| blk: {
@@ -123,7 +125,7 @@ pub const AuthFetch = struct {
         const owned_origin = try self.allocator.dupe(u8, origin);
         errdefer self.allocator.free(owned_origin);
 
-        const p = try Peer.init(self.allocator, self.private_key, owned_origin);
+        const p = try Peer.init(self.allocator, self.private_key, owned_origin, self.io);
         try self.peers.put(owned_origin, p);
         return self.peers.getPtr(owned_origin).?;
     }
@@ -181,7 +183,8 @@ pub const AuthFetch = struct {
 test "AuthFetch init and deinit" {
     const allocator = std.testing.allocator;
     const priv = try PrivateKey.generate();
-    var af = AuthFetch.init(allocator, priv);
+    var threaded = std.Io.Threaded.init_single_threaded;
+    var af = AuthFetch.init(allocator, threaded.io(), priv);
     defer af.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), af.peers.count());
@@ -216,7 +219,8 @@ test "parseUrl no path" {
 test "buildOrigin without port" {
     const allocator = std.testing.allocator;
     const priv = try PrivateKey.generate();
-    var af = AuthFetch.init(allocator, priv);
+    var threaded = std.Io.Threaded.init_single_threaded;
+    var af = AuthFetch.init(allocator, threaded.io(), priv);
     defer af.deinit();
 
     const parsed = try AuthFetch.parseUrl("https://example.com/api/test");
@@ -228,7 +232,8 @@ test "buildOrigin without port" {
 test "buildOrigin with port" {
     const allocator = std.testing.allocator;
     const priv = try PrivateKey.generate();
-    var af = AuthFetch.init(allocator, priv);
+    var threaded = std.Io.Threaded.init_single_threaded;
+    var af = AuthFetch.init(allocator, threaded.io(), priv);
     defer af.deinit();
 
     const parsed = try AuthFetch.parseUrl("http://localhost:3000/api");

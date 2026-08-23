@@ -2,9 +2,9 @@ const std = @import("std");
 const bsvz = @import("bsvz");
 const ec = bsvz.primitives.ec;
 const hex = bsvz.primitives.hex;
+const brc43 = bsvz.primitives.brc43;
 const crypto_hash = bsvz.crypto.hash;
 const sig_mod = bsvz.crypto.signature;
-const key_deriver_mod = bsvz.primitives.key_deriver;
 
 const services = @import("services/lib.zig");
 const storage = @import("storage/lib.zig");
@@ -202,32 +202,23 @@ pub const Wallet = struct {
         return .{ .confirmed = confirmed, .unconfirmed = 0 };
     }
 
-    /// Derive a protocol-scoped public key using BRC-42/43 via bsvz KeyDeriver.
+    /// Derive a protocol-scoped public key using BRC-42/43.
     pub fn getDerivedPublicKey(self: *const Wallet, args: GetPublicKeyArgs) !GetPublicKeyResult {
-        const kd = key_deriver_mod.KeyDeriver.init(self.private_key);
+        const invoice = try brc43.formatInvoice(self.allocator, args.security_level, args.protocol_id, args.key_id);
+        defer self.allocator.free(invoice);
 
-        const counterparty: key_deriver_mod.Counterparty = if (args.for_self)
-            .{ .type_ = .self }
-        else blk: {
+        const derived_pub = blk: {
+            if (args.for_self) {
+                const own_pub = try self.private_key.publicKey();
+                const child = try self.private_key.deriveChild(own_pub, invoice);
+                break :blk try child.publicKey();
+            }
             const cp_hex = args.counterparty orelse return error.InvalidEncoding;
             const cp_pub = try ec.PublicKey.fromHex(cp_hex);
-            break :blk .{ .type_ = .other, .public_key = cp_pub };
+            break :blk try cp_pub.deriveChild(self.private_key, invoice);
         };
 
-        const protocol = key_deriver_mod.Protocol{
-            .security_level = args.security_level,
-            .name = args.protocol_id,
-        };
-
-        const derived = try kd.derivePublicKey(
-            self.allocator,
-            protocol,
-            args.key_id,
-            counterparty,
-            args.for_self,
-        );
-
-        const compressed = derived.toCompressedSec1();
+        const compressed = derived_pub.toCompressedSec1();
         var hex_buf: [66]u8 = undefined;
         _ = try hex.encodeLower(&compressed, &hex_buf);
         return .{ .public_key = hex_buf };

@@ -19,6 +19,18 @@ const auth = toolbox.auth;
 
 const alloc = std.heap.page_allocator;
 
+// Zig 0.16 HTTP APIs require an `Io` instance. The C ABI has no way to pass
+// one in, so this library owns a process-wide Threaded runtime created on
+// first use and shared by all handles.
+var global_threaded_io: ?std.Io.Threaded = null;
+
+fn getIo() std.Io {
+    if (global_threaded_io == null) {
+        global_threaded_io = std.Io.Threaded.init(alloc, .{ .environ = .empty });
+    }
+    return global_threaded_io.?.io();
+}
+
 const OK: c_int = 0;
 const ERR_INVALID_INPUT: c_int = -1;
 const ERR_WALLET: c_int = -2;
@@ -99,7 +111,7 @@ export fn bsvwallet_create_remote(
         alloc.free(wallet_url);
         return ERR_ALLOC;
     };
-    af_ptr.* = auth.AuthFetch.init(alloc, pk);
+    af_ptr.* = auth.AuthFetch.init(alloc, getIo(), pk);
 
     // Create remote storage client pointing at the wallet storage endpoint
     const remote_ptr = alloc.create(storage.RemoteStorageClient) catch {
@@ -116,7 +128,7 @@ export fn bsvwallet_create_remote(
 
     // Set up OneSat services for chain queries
     const onesat_chain: services.OneSatServices.Chain = if (chain == 0) .main else .@"test";
-    var onesat = services.OneSatServices.init(alloc, onesat_chain, url_slice);
+    var onesat = services.OneSatServices.init(alloc, onesat_chain, url_slice, getIo());
 
     const wallet_ptr = alloc.create(wallet_mod.Wallet) catch {
         alloc.destroy(remote_ptr);
@@ -420,7 +432,7 @@ export fn bsvauth_create(
     const pk = ec.PrivateKey.fromBytes(privkey[0..32].*) catch return ERR_INVALID_INPUT;
 
     const af_ptr = alloc.create(auth.AuthFetch) catch return ERR_ALLOC;
-    af_ptr.* = auth.AuthFetch.init(alloc, pk);
+    af_ptr.* = auth.AuthFetch.init(alloc, getIo(), pk);
 
     out_handle.* = af_ptr;
     return OK;

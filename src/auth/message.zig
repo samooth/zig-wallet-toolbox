@@ -40,9 +40,9 @@ pub const AuthMessage = struct {
     signature: ?[]const u8 = null, // base64-encoded DER signature
 
     pub fn toJson(self: *const AuthMessage, allocator: std.mem.Allocator) ![]u8 {
-        var buf: std.ArrayList(u8) = .{};
-        errdefer buf.deinit(allocator);
-        const writer = buf.writer(allocator);
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        const writer = &out.writer;
 
         try writer.writeAll("{");
         try writer.print("\"version\":\"{s}\",", .{self.version});
@@ -62,7 +62,7 @@ pub const AuthMessage = struct {
             try writer.writeAll(",\"payload\":[");
             for (v, 0..) |byte, i| {
                 if (i > 0) try writer.writeAll(",");
-                try std.fmt.format(writer, "{d}", .{byte});
+                try writer.print("{d}", .{byte});
             }
             try writer.writeAll("]");
         }
@@ -70,13 +70,13 @@ pub const AuthMessage = struct {
             try writer.writeAll(",\"signature\":[");
             for (v, 0..) |byte, i| {
                 if (i > 0) try writer.writeAll(",");
-                try std.fmt.format(writer, "{d}", .{byte});
+                try writer.print("{d}", .{byte});
             }
             try writer.writeAll("]");
         }
 
         try writer.writeAll("}");
-        return buf.toOwnedSlice(allocator);
+        return try out.toOwnedSlice();
     }
 
     /// Result of fromJson; owns the backing memory for all string fields.

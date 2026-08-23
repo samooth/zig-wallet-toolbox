@@ -30,7 +30,7 @@ The Zig Wallet Toolbox is a Zig-native implementation of the BRC-100 wallet inte
 
 ## Getting Started
 
-**Requirements:** Zig `0.15.2`
+**Requirements:** Zig `0.16.0`
 
 Fetch the dependency:
 
@@ -60,11 +60,16 @@ pub fn main() !void {
     // 1. Generate or load a private key
     const private_key = try bsvz.primitives.ec.PrivateKey.generate();
 
-    // 2. Set up authenticated HTTP transport
-    var auth_fetch = wtb.auth.AuthFetch.init(allocator, private_key);
+    // 2. Create the Io runtime required by Zig 0.16 HTTP APIs
+    var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // 3. Set up authenticated HTTP transport
+    var auth_fetch = wtb.auth.AuthFetch.init(allocator, io, private_key);
     defer auth_fetch.deinit();
 
-    // 3. Create remote storage client pointing at a wallet endpoint
+    // 4. Create remote storage client pointing at a wallet endpoint
     var storage_client = wtb.storage.RemoteStorageClient.init(
         allocator,
         &auth_fetch,
@@ -72,15 +77,15 @@ pub fn main() !void {
     );
     defer storage_client.deinit();
 
-    // 4. Wire up storage manager
+    // 5. Wire up storage manager
     var storage_mgr = wtb.storage.WalletStorageManager.init(allocator);
     storage_mgr.setActive(storage_client.storageProvider());
 
-    // 5. Create network services
-    var services = wtb.services.OneSatServices.init(allocator, .main, null);
+    // 6. Create network services
+    var services = wtb.services.OneSatServices.init(allocator, .main, null, io);
     defer services.deinit();
 
-    // 6. Build the wallet
+    // 7. Build the wallet
     var wallet = try wtb.wallet.Wallet.init(allocator, .{
         .private_key = private_key,
         .chain = .main,
@@ -165,7 +170,10 @@ const actions = try wallet.listActions(.{ .labels = &.{"payment"}, .limit = 10 }
 ### Authenticated HTTP
 
 ```zig
-var auth_fetch = AuthFetch.init(allocator, private_key);
+var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+defer threaded.deinit();
+
+var auth_fetch = AuthFetch.init(allocator, threaded.io(), private_key);
 defer auth_fetch.deinit();
 
 // GET with mutual auth
@@ -180,7 +188,7 @@ defer response.deinit();
 ### Services
 
 ```zig
-var services = OneSatServices.init(allocator, .main, null);
+var services = OneSatServices.init(allocator, .main, null, io);
 defer services.deinit();
 
 const height = try services.getHeight();

@@ -11,11 +11,13 @@ const MessageType = message_mod.MessageType;
 pub const SimplifiedHttpTransport = struct {
     base_url: []const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
-    pub fn init(allocator: std.mem.Allocator, base_url: []const u8) SimplifiedHttpTransport {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, base_url: []const u8) SimplifiedHttpTransport {
         return .{
             .base_url = base_url,
             .allocator = allocator,
+            .io = io,
         };
     }
 
@@ -30,6 +32,7 @@ pub const SimplifiedHttpTransport = struct {
 
         const result = try http_client.postBinary(
             self.allocator,
+            self.io,
             url,
             json_body,
             &.{.{ .name = "Content-Type", .value = "application/json" }},
@@ -105,6 +108,7 @@ pub const SimplifiedHttpTransport = struct {
         // Perform the request
         const result = try doGeneralRequest(
             self.allocator,
+            self.io,
             http_method,
             full_url,
             extra_headers,
@@ -144,12 +148,13 @@ fn parseHttpMethod(method_str: []const u8) std.http.Method {
 
 fn doGeneralRequest(
     allocator: std.mem.Allocator,
+    io: std.Io,
     method: std.http.Method,
     url: []const u8,
     extra_headers: []const std.http.Header,
     body: ?[]const u8,
 ) !http_client.BinaryResponse {
-    var client: std.http.Client = .{ .allocator = allocator };
+    var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
@@ -172,7 +177,7 @@ fn doGeneralRequest(
     const decompress_buf = try allocator.alloc(u8, 1 << 16);
     defer allocator.free(decompress_buf);
     const body_reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
-    const resp_body = try body_reader.allocRemaining(allocator, std.io.Limit.limited(4 * 1024 * 1024));
+    const resp_body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(4 * 1024 * 1024));
 
     return .{
         .status = resp.head.status,

@@ -21,5 +21,5 @@ pub const SignedInput = sign.SignedInput;
 pub const buildSignActionArgs = sign.buildSignActionArgs;
 
 test {
-    @import("std").testing.refAllDeclsRecursive(@This());
+    @import("../util.zig").refAllDeclsRecursive(@This());
 }

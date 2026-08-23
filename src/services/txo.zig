@@ -4,6 +4,7 @@ const http = @import("../http/client.zig");
 pub const TxoClient = struct {
     host: []const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     const base_path = "/1sat/txo";
 
@@ -13,10 +14,11 @@ pub const TxoClient = struct {
         block: bool = false,
     };
 
-    pub fn init(allocator: std.mem.Allocator, host: []const u8) TxoClient {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8) TxoClient {
         return .{
             .host = host,
             .allocator = allocator,
+            .io = io,
         };
     }
 
@@ -29,7 +31,7 @@ pub const TxoClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/{s}{s}", .{ self.host, base_path, outpoint, qs });
         defer self.allocator.free(url);
 
-        const result = try http.getJson(self.allocator, url, &.{});
+        const result = try http.getJson(self.allocator, self.io, url, &.{});
         if (result.status != .ok) return error.HttpRequestFailed;
 
         return parseIndexedOutput(result.body);
@@ -39,7 +41,7 @@ pub const TxoClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/{s}/spend", .{ self.host, base_path, outpoint });
         defer self.allocator.free(url);
 
-        const result = try http.getJson(self.allocator, url, &.{});
+        const result = try http.getJson(self.allocator, self.io, url, &.{});
         if (result.status != .ok) return error.HttpRequestFailed;
 
         const obj = result.body.object;
@@ -63,7 +65,7 @@ pub const TxoClient = struct {
             .{ .name = "Content-Type", .value = "application/json" },
         };
 
-        const result = try http.postJson(self.allocator, url, body, &headers);
+        const result = try http.postJson(self.allocator, self.io, url, body, &headers);
         if (result.status != .ok) return error.HttpRequestFailed;
 
         const arr = switch (result.body) {
@@ -96,15 +98,15 @@ pub const TxoClient = struct {
 
     fn serializeStringArray(allocator: std.mem.Allocator, strings: []const []const u8) ![]u8 {
         var buf: std.ArrayList(u8) = .empty;
-        var writer = buf.writer(allocator);
-        try writer.writeByte('[');
+        errdefer buf.deinit(allocator);
+        try buf.append(allocator, '[');
         for (strings, 0..) |s, i| {
-            if (i > 0) try writer.writeByte(',');
-            try writer.writeByte('"');
-            try writer.writeAll(s);
-            try writer.writeByte('"');
+            if (i > 0) try buf.append(allocator, ',');
+            try buf.append(allocator, '"');
+            try buf.appendSlice(allocator, s);
+            try buf.append(allocator, '"');
         }
-        try writer.writeByte(']');
+        try buf.append(allocator, ']');
         return buf.toOwnedSlice(allocator);
     }
 

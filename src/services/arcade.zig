@@ -5,6 +5,7 @@ const types = @import("types.zig");
 pub const ArcadeClient = struct {
     host: []const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     const base_path = "/1sat/arcade";
 
@@ -13,10 +14,11 @@ pub const ArcadeClient = struct {
         callback_token: ?[]const u8 = null,
     };
 
-    pub fn init(allocator: std.mem.Allocator, host: []const u8) ArcadeClient {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8) ArcadeClient {
         return .{
             .host = host,
             .allocator = allocator,
+            .io = io,
         };
     }
 
@@ -41,7 +43,7 @@ pub const ArcadeClient = struct {
             header_count += 1;
         }
 
-        const result = try http.postJson(self.allocator, url, beef, headers_buf[0..header_count]);
+        const result = try http.postJson(self.allocator, self.io, url, beef, headers_buf[0..header_count]);
         if (result.status != .ok) return error.HttpRequestFailed;
 
         return parseStatusResponse(result.body);
@@ -51,7 +53,7 @@ pub const ArcadeClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/tx/{s}", .{ self.host, base_path, txid });
         defer self.allocator.free(url);
 
-        const result = try http.getJson(self.allocator, url, &.{});
+        const result = try http.getJson(self.allocator, self.io, url, &.{});
         if (result.status != .ok) return error.HttpRequestFailed;
 
         return parseStatusResponse(result.body);
