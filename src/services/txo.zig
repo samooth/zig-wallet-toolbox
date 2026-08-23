@@ -9,9 +9,8 @@ pub const TxoClient = struct {
     const base_path = "/1sat/txo";
 
     pub const GetOptions = struct {
-        sats: bool = false,
-        spend: bool = false,
-        block: bool = false,
+        /// Include the spend txid when present (only documented query flag).
+        spend: bool = true,
     };
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8) TxoClient {
@@ -86,13 +85,7 @@ pub const TxoClient = struct {
     }
 
     fn buildQueryString(opts: GetOptions) []const u8 {
-        if (opts.sats and opts.spend and opts.block) return "?sats&spend&block";
-        if (opts.sats and opts.spend) return "?sats&spend";
-        if (opts.sats and opts.block) return "?sats&block";
-        if (opts.spend and opts.block) return "?spend&block";
-        if (opts.sats) return "?sats";
-        if (opts.spend) return "?spend";
-        if (opts.block) return "?block";
+        if (opts.spend) return "?spend=true";
         return "";
     }
 

@@ -11,11 +11,44 @@ const Wallet = wtb.wallet.Wallet;
 const WalletConfig = wtb.wallet.WalletConfig;
 
 const host = "https://api.1sat.app";
-const wallet_url = host ++ "/1sat/wallet";
 
-// End-to-end test: generate a random key, connect to the live
-// go-wallet-toolbox storage at api.1sat.app, and exercise the
-// basic wallet lifecycle.
+// Storage endpoints are NOT hosted on api.1sat.app — they belong to a
+// go-wallet-toolbox deployment. Set WALLET_STORAGE_URL (e.g.
+// "https://your-backend.example.com") to run the storage-dependent parts;
+// without it the test only exercises the public 1Sat service APIs.
+const env_storage_url = "WALLET_STORAGE_URL";
+
+fn getStorageUrl(allocator: std.mem.Allocator) !?[]u8 {
+    const io = getIo();
+    if (@import("builtin").os.tag != .linux) return null;
+    var proc_dir = std.Io.Dir.openDirAbsolute(io, "/proc/self", .{}) catch return null;
+    defer proc_dir.close(io);
+    const data = proc_dir.readFileAlloc(io, "environ", allocator, .limited(1024 * 1024)) catch return null;
+    defer allocator.free(data);
+
+    var it = std.mem.splitScalar(u8, data, 0);
+    while (it.next()) |entry| {
+        const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        if (!std.mem.eql(u8, entry[0..eq], env_storage_url)) continue;
+        const value = entry[eq + 1 ..];
+        if (value.len == 0) return null;
+        return try allocator.dupe(u8, value);
+    }
+    return null;
+}
+
+var global_threaded: ?std.Io.Threaded = null;
+
+fn getIo() std.Io {
+    if (global_threaded == null) {
+        global_threaded = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = .empty });
+    }
+    return global_threaded.?.io();
+}
+
+// End-to-end test: generate a random key and exercise the wallet lifecycle
+// against the 1Sat service APIs plus (when WALLET_STORAGE_URL is set) a
+// remote BRC-100 storage backend.
 test "e2e: remote wallet against api.1sat.app" {
     // Use page_allocator for e2e test — the JSON-RPC response parsing has
     // intentional ownership transfer that the testing allocator flags as leaks.
@@ -23,6 +56,10 @@ test "e2e: remote wallet against api.1sat.app" {
     // be freed until the caller is done with the result. This is a known v1
     // limitation tracked for cleanup.
     const allocator = std.heap.page_allocator;
+    const gpa = std.heap.page_allocator;
+
+    const storage_url_owned = try getStorageUrl(gpa);
+    defer if (storage_url_owned) |u| gpa.free(u);
 
     // 1. Generate a fresh random private key
     const private_key = try PrivateKey.generate();
@@ -36,17 +73,24 @@ test "e2e: remote wallet against api.1sat.app" {
     var auth_fetch = AuthFetch.init(allocator, io, private_key);
     defer auth_fetch.deinit();
 
-    // 3. Create RemoteStorageClient pointing at 1sat-stack wallet endpoint
+    // 3. Chain height via services (public API, no auth needed)
+    var onesat = OneSatServices.init(allocator, .main, host, io);
+    defer onesat.deinit();
+    const height = try onesat.getHeight();
+    std.log.info("chain height: {d}", .{height});
+    try std.testing.expect(height > 800000);
+
+    const wallet_url = storage_url_owned orelse {
+        std.log.info("skip: set WALLET_STORAGE_URL to run the remote storage lifecycle against a go-wallet-toolbox backend", .{});
+        return;
+    };
+
     var storage_client = RemoteStorageClient.init(allocator, &auth_fetch, wallet_url);
     defer storage_client.deinit();
 
     // 4. Wire up WalletStorageManager with remote as active provider
     var storage_mgr = WalletStorageManager.init(allocator);
     storage_mgr.setActive(storage_client.storageProvider());
-
-    // 5. Create OneSatServices for mainnet
-    var onesat = OneSatServices.init(allocator, .main, host, io);
-    defer onesat.deinit();
 
     // 6. Build the Wallet
     var wallet = try Wallet.init(allocator, .{
@@ -98,11 +142,6 @@ test "e2e: remote wallet against api.1sat.app" {
     // A brand new wallet should have no actions
     const actions = try wallet.listActions(.{ .limit = 10 });
     std.log.info("listActions: {}", .{actions});
-
-    // -- Step E: chain height via services --
-    const height = try onesat.getHeight();
-    std.log.info("chain height: {d}", .{height});
-    try std.testing.expect(height > 800000);
 
     std.log.info("=== e2e test passed ===", .{});
 }

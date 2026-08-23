@@ -21,7 +21,7 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 - [x] Signer types (`CreateActionArgs`, `SignActionArgs`, options)
 - [x] Signable data extraction and signed input construction
 - [x] HTTP client and JSON-RPC request/response handling
-- [x] E2e test against live `api.1sat.app`
+- [x] E2e test against live `api.1sat.app` services (storage lifecycle via `WALLET_STORAGE_URL`)
 
 ## Storage
 

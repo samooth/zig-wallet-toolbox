@@ -176,27 +176,9 @@ pub const OneSatServices = struct {
     }
 
     fn getStatusForSingleTxid(self: *OneSatServices, txid: []const u8, current_height: *?u32) !types.TxStatusDetail {
-        // Try Arcade first
-        if (self.arcade.getStatus(txid)) |status| {
-            switch (status.tx_status) {
-                .MINED, .IMMUTABLE => {
-                    if (current_height.* == null) {
-                        current_height.* = try self.chaintracks.currentHeight();
-                    }
-                    const depth = if (status.block_height) |bh|
-                        current_height.*.? - bh + 1
-                    else
-                        1;
-                    return .{ .txid = txid, .depth = depth, .status = .mined };
-                },
-                .SEEN_ON_NETWORK, .ACCEPTED_BY_NETWORK, .SENT_TO_NETWORK, .RECEIVED => {
-                    return .{ .txid = txid, .depth = 0, .status = .known };
-                },
-                else => {},
-            }
-        } else |_| {}
-
-        // Fall back to beef storage
+        // The 1Sat API has no per-txid status endpoint; presence in BEEF
+        // storage is the documented way to check whether a tx is known.
+        _ = current_height;
         _ = self.beef.getBeef(txid) catch {
             return .{ .txid = txid, .depth = null, .status = .unknown };
         };
@@ -206,7 +188,7 @@ pub const OneSatServices = struct {
     }
 
     pub fn getUtxoStatus(self: *OneSatServices, allocator: std.mem.Allocator, outpoint: []const u8) !types.UtxoStatusResult {
-        const txo_result = self.txo.get(outpoint, .{ .sats = true, .spend = true, .block = true }) catch {
+        const txo_result = self.txo.get(outpoint, .{}) catch {
             return .{
                 .name = service_name,
                 .status = .success,

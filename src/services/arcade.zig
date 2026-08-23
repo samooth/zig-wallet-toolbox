@@ -2,12 +2,16 @@ const std = @import("std");
 const http = @import("../http/client.zig");
 const types = @import("types.zig");
 
+/// Broadcast client backed by the 1Sat Stack API gateway
+/// (`POST {host}/1sat/tx/`, which proxies to ARC upstream).
 pub const ArcadeClient = struct {
     host: []const u8,
     allocator: std.mem.Allocator,
     io: std.Io,
 
-    const base_path = "/1sat/arcade";
+    /// The gateway exposes a single broadcast endpoint; per-txid status
+    /// queries are not part of the documented API (use BeefClient instead).
+    const broadcast_path = "/1sat/tx/";
 
     pub const SubmitOptions = struct {
         callback_url: ?[]const u8 = null,
@@ -27,7 +31,7 @@ pub const ArcadeClient = struct {
     }
 
     pub fn submitTransaction(self: *ArcadeClient, beef: []const u8, opts: SubmitOptions) !ArcadeStatusResponse {
-        const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/tx", .{ self.host, base_path });
+        const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.host, broadcast_path });
         defer self.allocator.free(url);
 
         var headers_buf: [4]std.http.Header = undefined;
@@ -44,17 +48,8 @@ pub const ArcadeClient = struct {
         }
 
         const result = try http.postJson(self.allocator, self.io, url, beef, headers_buf[0..header_count]);
-        if (result.status != .ok) return error.HttpRequestFailed;
-
-        return parseStatusResponse(result.body);
-    }
-
-    pub fn getStatus(self: *ArcadeClient, txid: []const u8) !ArcadeStatusResponse {
-        const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/tx/{s}", .{ self.host, base_path, txid });
-        defer self.allocator.free(url);
-
-        const result = try http.getJson(self.allocator, self.io, url, &.{});
-        if (result.status != .ok) return error.HttpRequestFailed;
+        // 200 = accepted/terminal, 202 = wait timed out (status is best-effort)
+        if (result.status != .ok and result.status != .accepted) return error.HttpRequestFailed;
 
         return parseStatusResponse(result.body);
     }

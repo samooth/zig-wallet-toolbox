@@ -69,11 +69,12 @@ pub fn main() !void {
     var auth_fetch = wtb.auth.AuthFetch.init(allocator, io, private_key);
     defer auth_fetch.deinit();
 
-    // 4. Create remote storage client pointing at a wallet endpoint
+    // 4. Create remote storage client pointing at your go-wallet-toolbox
+    //    deployment (wallet storage is NOT hosted on api.1sat.app)
     var storage_client = wtb.storage.RemoteStorageClient.init(
         allocator,
         &auth_fetch,
-        "https://api.1sat.app/1sat/wallet",
+        "https://your-backend.example.com",
     );
     defer storage_client.deinit();
 
@@ -204,11 +205,14 @@ cd zig-wallet-toolbox
 zig build test
 ```
 
-The test suite includes unit tests embedded in source files and integration tests in `tests/`. The e2e test in `tests/e2e_test.zig` runs against the live `api.1sat.app` endpoint.
+The test suite includes unit tests embedded in source files and integration tests in `tests/`. The e2e test in `tests/e2e_test.zig` always exercises the public 1Sat service APIs (`api.1sat.app`); set `WALLET_STORAGE_URL` to also run the remote storage lifecycle against your own go-wallet-toolbox backend:
 
 ```bash
-# Unit tests only
+# Unit + service tests (storage lifecycle is skipped)
 zig build test
+
+# Full e2e including remote BRC-100 storage
+WALLET_STORAGE_URL=https://your-backend.example.com zig build test
 
 # Run with logging to see e2e details
 zig build test 2>&1 | head -50
