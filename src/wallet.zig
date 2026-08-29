@@ -9,6 +9,7 @@ const sig_mod = bsvz.crypto.signature;
 const services = @import("services/lib.zig");
 const storage = @import("storage/lib.zig");
 const signer = @import("signer/lib.zig");
+const PrivilegedKeyManager = @import("keymanagement/privileged.zig").PrivilegedKeyManager;
 
 pub const Chain = enum { main, @"test" };
 
@@ -27,26 +28,26 @@ pub const ListOutputsArgs = struct {
     offset: ?u32 = null,
 
     pub fn toJson(self: ListOutputsArgs, allocator: std.mem.Allocator) !std.json.Value {
-        var obj: std.json.ObjectMap = .empty;
+        var obj = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
 
         if (self.basket) |basket| {
-            try obj.put(allocator,"basket", .{ .string = basket });
+            try obj.put(allocator, "basket", .{ .string = basket });
         }
         if (self.tags) |tags| {
             var arr = std.json.Array.init(allocator);
             for (tags) |tag| {
                 try arr.append(.{ .string = tag });
             }
-            try obj.put(allocator,"tags", .{ .array = arr });
+            try obj.put(allocator, "tags", .{ .array = arr });
         }
         if (self.spendable) |spendable| {
-            try obj.put(allocator,"spendable", .{ .bool = spendable });
+            try obj.put(allocator, "spendable", .{ .bool = spendable });
         }
         if (self.limit) |limit| {
-            try obj.put(allocator,"limit", .{ .integer = @intCast(limit) });
+            try obj.put(allocator, "limit", .{ .integer = @intCast(limit) });
         }
         if (self.offset) |offset| {
-            try obj.put(allocator,"offset", .{ .integer = @intCast(offset) });
+            try obj.put(allocator, "offset", .{ .integer = @intCast(offset) });
         }
 
         return .{ .object = obj };
@@ -59,20 +60,20 @@ pub const ListActionsArgs = struct {
     offset: ?u32 = null,
 
     pub fn toJson(self: ListActionsArgs, allocator: std.mem.Allocator) !std.json.Value {
-        var obj: std.json.ObjectMap = .empty;
+        var obj = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
 
         if (self.labels) |labels| {
             var arr = std.json.Array.init(allocator);
             for (labels) |label| {
                 try arr.append(.{ .string = label });
             }
-            try obj.put(allocator,"labels", .{ .array = arr });
+            try obj.put(allocator, "labels", .{ .array = arr });
         }
         if (self.limit) |limit| {
-            try obj.put(allocator,"limit", .{ .integer = @intCast(limit) });
+            try obj.put(allocator, "limit", .{ .integer = @intCast(limit) });
         }
         if (self.offset) |offset| {
-            try obj.put(allocator,"offset", .{ .integer = @intCast(offset) });
+            try obj.put(allocator, "offset", .{ .integer = @intCast(offset) });
         }
 
         return .{ .object = obj };
@@ -155,8 +156,8 @@ pub const Wallet = struct {
     }
 
     pub fn abortAction(self: *Wallet, reference: []const u8) !std.json.Value {
-        var obj: std.json.ObjectMap = .empty;
-        try obj.put(self.allocator,"reference", .{ .string = reference });
+        var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
+        try obj.put(self.allocator, "reference", .{ .string = reference });
         const args_json: std.json.Value = .{ .object = obj };
         return self.storage_manager.abortAction(self.allocator, self.authId(), args_json);
     }
@@ -222,6 +223,23 @@ pub const Wallet = struct {
         var hex_buf: [66]u8 = undefined;
         _ = try hex.encodeLower(&compressed, &hex_buf);
         return .{ .public_key = hex_buf };
+    }
+
+    /// Returns a `PrivilegedKeyManager` bound to this wallet's master key, storage, and identity.
+    pub fn privilegedKeyManager(self: *Wallet) PrivilegedKeyManager {
+        return PrivilegedKeyManager.init(self.allocator, self.private_key, &self.storage_manager, &self.identity_key);
+    }
+
+    /// Encrypt `plaintext` under this wallet's BRC-42 privileged key (AES-GCM).
+    /// Returns owned ciphertext (caller frees). See `PrivilegedKeyManager.encrypt`.
+    pub fn encrypt(self: *Wallet, allocator: std.mem.Allocator, plaintext: []const u8) ![]u8 {
+        return self.privilegedKeyManager().encrypt(allocator, plaintext);
+    }
+
+    /// Decrypt ciphertext produced by `encrypt` with this wallet's privileged key.
+    /// Returns owned plaintext (caller frees). See `PrivilegedKeyManager.decrypt`.
+    pub fn decrypt(self: *Wallet, allocator: std.mem.Allocator, ciphertext: []const u8) ![]u8 {
+        return self.privilegedKeyManager().decrypt(allocator, ciphertext);
     }
 };
 

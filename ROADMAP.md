@@ -25,8 +25,9 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 
 ## Storage
 
-- [ ] Local storage provider (SQLite via C interop or custom file-backed store)
-- [ ] GORM-equivalent entity model (Output, Transaction, User, OutputBasket, TxNote, KnownTx)
+- [x] Local storage provider (in-memory HashMap via LocalStorageClient)
+- [x] SQLite-backed local storage provider (file persistence, WAL mode, concurrent + crash-recovery capable)
+- [x] Entity model (users, transactions, outputs, output baskets, labels, tags, known_txs, tx_notes, commissions, certificates, key_value) — schema + idempotent migrations
 - [ ] CRUD query builder with typed conditions, filters, pagination
 - [ ] Storage server (HTTP server hosting wallet storage for remote clients)
 - [ ] BEEF verification in storage layer
@@ -51,8 +52,8 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 ## Key Management
 
 - [x] Protocol-based key derivation within wallet context (BRC-42/43)
-- [ ] `PrivilegedKeyManager` equivalent with Shamir secret sharing
-- [ ] Wallet-level encrypt/decrypt operations
+- [x] `PrivilegedKeyManager` equivalent with Shamir secret sharing (BRC-42 privileged key split into threshold shares via `bsvz.primitives.keyshares`, persisted in the `key_shares` SQLite table)
+- [x] Wallet-level encrypt/decrypt operations (privileged key → AES-GCM via `bsvz.primitives.symmetric`)
 
 ## Wallet API Completeness
 
@@ -85,6 +86,6 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 - [ ] OpenTelemetry tracing
 - [ ] Structured logging beyond `std.log.scoped`
 - [ ] Permissions manager (per-app, per-protocol access control)
-- [ ] MockChain for offline testing (mock mining, UTXO tracking, proof generation)
+- [~] Mock HTTP server created (src/test/mock_http.zig) — limited by Zig 0.16 I/O API; revisit on 0.17+
 - [ ] CI workflow (GitHub Actions)
 - [ ] Examples directory

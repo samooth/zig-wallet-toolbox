@@ -53,10 +53,10 @@ pub const RemoteStorageClient = struct {
     }
 
     fn buildAuthJson(self: *RemoteStorageClient, auth: types.AuthId) !std.json.Value {
-        var obj: std.json.ObjectMap = .empty;
-        try obj.put(self.allocator,"identityKey", .{ .string = auth.identity_key });
+        var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
+        try obj.put(self.allocator, "identityKey", .{ .string = auth.identity_key });
         if (auth.storage_identity_key) |sik| {
-            try obj.put(self.allocator,"storageIdentityKey", .{ .string = sik });
+            try obj.put(self.allocator, "storageIdentityKey", .{ .string = sik });
         }
         return .{ .object = obj };
     }
@@ -139,6 +139,37 @@ pub const RemoteStorageClient = struct {
         try params.array.append(args);
 
         return self.rpcCall(allocator, "internalizeAction", params);
+    }
+
+    pub fn storeKeyShares(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) anyerror!void {
+        var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
+        defer params.array.deinit();
+        try params.array.append(try self.buildAuthJson(auth));
+
+        var arr = std.json.Array.init(self.allocator);
+        defer arr.deinit();
+        for (shares) |s| {
+            try arr.append(.{ .string = s });
+        }
+        try params.array.append(.{ .array = arr });
+
+        _ = try self.rpcCall(allocator, "storeKeyShares", params);
+    }
+
+    pub fn loadKeyShares(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId) anyerror![][]u8 {
+        var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
+        defer params.array.deinit();
+        try params.array.append(try self.buildAuthJson(auth));
+
+        const result = try self.rpcCall(allocator, "loadKeyShares", params);
+        const arr = if (result == .array) result.array.items else return error.InvalidResponse;
+        var out = try allocator.alloc([]u8, arr.len);
+        errdefer allocator.free(out);
+        for (arr, 0..) |item, i| {
+            if (item != .string) return error.InvalidResponse;
+            out[i] = try allocator.dupe(u8, item.string);
+        }
+        return out;
     }
 
     pub fn destroy(_: *RemoteStorageClient) void {}

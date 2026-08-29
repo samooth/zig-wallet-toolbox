@@ -15,6 +15,8 @@ pub const WalletStorageProvider = struct {
         listOutputs: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
         listActions: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
         internalizeAction: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) anyerror!std.json.Value,
+        storeKeyShares: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) anyerror!void,
+        loadKeyShares: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId) anyerror![][]u8,
         destroy: *const fn (ptr: *anyopaque) void,
     };
 
@@ -52,6 +54,14 @@ pub const WalletStorageProvider = struct {
 
     pub fn internalizeAction(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         return self.vtable.internalizeAction(self.ptr, allocator, auth, args);
+    }
+
+    pub fn storeKeyShares(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) !void {
+        return self.vtable.storeKeyShares(self.ptr, allocator, auth, shares);
+    }
+
+    pub fn loadKeyShares(self: WalletStorageProvider, allocator: std.mem.Allocator, auth: types.AuthId) ![][]u8 {
+        return self.vtable.loadKeyShares(self.ptr, allocator, auth);
     }
 
     pub fn destroy(self: WalletStorageProvider) void {
@@ -97,6 +107,14 @@ pub const WalletStorageProvider = struct {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 return self.internalizeAction(allocator, auth, args);
             }
+            fn storeKeyShares(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) anyerror!void {
+                const self: Ptr = @ptrCast(@alignCast(p));
+                return self.storeKeyShares(allocator, auth, shares);
+            }
+            fn loadKeyShares(p: *anyopaque, allocator: std.mem.Allocator, auth: types.AuthId) anyerror![][]u8 {
+                const self: Ptr = @ptrCast(@alignCast(p));
+                return self.loadKeyShares(allocator, auth);
+            }
             fn destroy(p: *anyopaque) void {
                 const self: Ptr = @ptrCast(@alignCast(p));
                 self.destroy();
@@ -114,6 +132,8 @@ pub const WalletStorageProvider = struct {
                 .listOutputs = impl.listOutputs,
                 .listActions = impl.listActions,
                 .internalizeAction = impl.internalizeAction,
+                .storeKeyShares = impl.storeKeyShares,
+                .loadKeyShares = impl.loadKeyShares,
                 .destroy = impl.destroy,
             },
         };

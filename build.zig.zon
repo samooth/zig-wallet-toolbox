@@ -5,8 +5,12 @@
     .fingerprint = 0xf125ec13a2d567c9,
     .dependencies = .{
         .bsvz = .{
-            .url = "https://github.com/samooth/bsvz/archive/refs/tags/v0.1.0.tar.gz",
+            .url = "https://github.com/samooth/bsvz/archive/6ce3253e12c58a9c978bf74aeea886ade3d3afe3.tar.gz",
             .hash = "bsvz-0.1.0-wvsL-fyNFQAWFhifuU4QuPB1vQ0YIVhBJTVTgitNt7wI",
+        },
+        .sqlite = .{
+            .url = "git+https://github.com/samooth/zig-sqlite#5ef50a006319c0718d9edfa37aedee3edff67678",
+            .hash = "sqlite-3.49.2-F2R_a56sDgDPwvJBHYAlb9tuqmqNBdE-fvrVp2ctFyBI",
         },
     },
     .paths = .{

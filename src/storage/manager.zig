@@ -68,6 +68,16 @@ pub const WalletStorageManager = struct {
         return provider.internalizeAction(allocator, auth, args);
     }
 
+    pub fn storeKeyShares(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) !void {
+        const provider = self.active orelse return error.NoActiveProvider;
+        return provider.storeKeyShares(allocator, auth, shares);
+    }
+
+    pub fn loadKeyShares(self: *WalletStorageManager, allocator: std.mem.Allocator, auth: types.AuthId) ![][]u8 {
+        const provider = self.active orelse return error.NoActiveProvider;
+        return provider.loadKeyShares(allocator, auth);
+    }
+
     pub fn storageProvider(self: *WalletStorageManager) WalletStorageProvider {
         return WalletStorageProvider.init(self);
     }

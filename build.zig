@@ -10,12 +10,19 @@ pub fn build(b: *std.Build) void {
     });
     const bsvz_module = bsvz_dep.module("bsvz");
 
+    const sqlite_dep = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const sqlite_module = sqlite_dep.module("sqlite");
+
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
     });
     root_module.addImport("bsvz", bsvz_module);
+    root_module.addImport("sqlite", sqlite_module);
 
     const lib = b.addLibrary(.{
         .name = "zig-wallet-toolbox",
@@ -30,7 +37,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    c_module.addImport("bsvz", bsvz_module);
+    // Import only the main library; it re-exports bsvz and sqlite
     c_module.addImport("zig-wallet-toolbox", root_module);
 
     const c_lib = b.addLibrary(.{
@@ -53,6 +60,7 @@ pub fn build(b: *std.Build) void {
     });
     test_module.addImport("zig-wallet-toolbox", root_module);
     test_module.addImport("bsvz", bsvz_module);
+    test_module.addImport("sqlite", sqlite_module);
 
     const integration_tests = b.addTest(.{
         .root_module = test_module,

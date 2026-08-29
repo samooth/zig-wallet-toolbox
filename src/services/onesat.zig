@@ -60,7 +60,8 @@ pub const OneSatServices = struct {
     // --- WalletServices vtable methods ---
 
     pub fn getMerklePath(self: *OneSatServices, allocator: std.mem.Allocator, txid: []const u8) !types.MerklePathResult {
-        const proof_bytes = self.beef.getProof(txid) catch {
+        const proof_bytes = self.beef.getProof(txid) catch |err| {
+            std.log.err("getMerklePath: failed to get proof for {s}: {s}", .{ txid, @errorName(err) });
             return .{
                 .name = service_name,
                 .merkle_path = null,
@@ -82,7 +83,8 @@ pub const OneSatServices = struct {
 
     pub fn getRawTx(self: *OneSatServices, allocator: std.mem.Allocator, txid: []const u8) !types.RawTxResult {
         _ = allocator;
-        const raw = self.beef.getRawTx(txid) catch {
+        const raw = self.beef.getRawTx(txid) catch |err| {
+            std.log.err("getRawTx: failed to get raw tx for {s}: {s}", .{ txid, @errorName(err) });
             return .{
                 .txid = txid,
                 .name = service_name,
@@ -149,8 +151,7 @@ pub const OneSatServices = struct {
         return results.toOwnedSlice(allocator);
     }
 
-    pub fn getBeefForTxid(self: *OneSatServices, allocator: std.mem.Allocator, txid: []const u8) ![]u8 {
-        _ = allocator;
+    pub fn getBeefForTxid(self: *OneSatServices, _: std.mem.Allocator, txid: []const u8) ![]u8 {
         return self.beef.getBeef(txid);
     }
 
@@ -179,7 +180,8 @@ pub const OneSatServices = struct {
         // The 1Sat API has no per-txid status endpoint; presence in BEEF
         // storage is the documented way to check whether a tx is known.
         _ = current_height;
-        _ = self.beef.getBeef(txid) catch {
+        _ = self.beef.getBeef(txid) catch |err| {
+            std.log.err("getStatusForSingleTxid: failed to get beef for {s}: {s}", .{ txid, @errorName(err) });
             return .{ .txid = txid, .depth = null, .status = .unknown };
         };
         // If beef returned data, tx is at least known.
@@ -188,7 +190,8 @@ pub const OneSatServices = struct {
     }
 
     pub fn getUtxoStatus(self: *OneSatServices, allocator: std.mem.Allocator, outpoint: []const u8) !types.UtxoStatusResult {
-        const txo_result = self.txo.get(outpoint, .{}) catch {
+        const txo_result = self.txo.get(outpoint, .{}) catch |err| {
+            std.log.err("getUtxoStatus: failed to get txo for {s}: {s}", .{ outpoint, @errorName(err) });
             return .{
                 .name = service_name,
                 .status = .success,

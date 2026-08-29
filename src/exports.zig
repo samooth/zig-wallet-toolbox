@@ -3,14 +3,14 @@
 //! All functions return 0 on success, negative on failure.
 
 const std = @import("std");
-const bsvz = @import("bsvz");
+const toolbox = @import("zig-wallet-toolbox");
+const bsvz = toolbox.bsvz;
 const ec = bsvz.primitives.ec;
 const hex = bsvz.primitives.hex;
 const crypto_hash = bsvz.crypto.hash;
 const script_builder = bsvz.script.builder;
 const Opcode = bsvz.script.opcode.Opcode;
 const p2pkh = bsvz.script.templates.p2pkh;
-const toolbox = @import("zig-wallet-toolbox");
 const wallet_mod = toolbox.wallet;
 const signer_types = toolbox.signer.types;
 const storage = toolbox.storage;
@@ -19,17 +19,23 @@ const auth = toolbox.auth;
 
 const alloc = std.heap.page_allocator;
 
-// Zig 0.16 HTTP APIs require an `Io` instance. The C ABI has no way to pass
-// one in, so this library owns a process-wide Threaded runtime created on
-// first use and shared by all handles.
-var global_threaded_io: ?std.Io.Threaded = null;
+/// Internal wallet handle struct (not extern, used internally).
+const WalletHandle = struct {
+    wallet: wallet_mod.Wallet,
+    threaded_io: std.Io.Threaded,
+    // Owned resources that need cleanup
+    remote_client: ?*storage.RemoteStorageClient,
+    auth_fetch: ?*auth.AuthFetch,
+    onesat_services: ?*services.OneSatServices,
+    wallet_url: ?[]u8,
+    backend_url: ?[]u8,
+};
 
-fn getIo() std.Io {
-    if (global_threaded_io == null) {
-        global_threaded_io = std.Io.Threaded.init(alloc, .{ .environ = .empty });
-    }
-    return global_threaded_io.?.io();
-}
+/// Internal auth handle struct (not extern, used internally).
+const AuthHandle = struct {
+    auth_fetch: auth.AuthFetch,
+    threaded_io: std.Io.Threaded,
+};
 
 const OK: c_int = 0;
 const ERR_INVALID_INPUT: c_int = -1;
@@ -39,9 +45,6 @@ const ERR_ALLOC: c_int = -4;
 const ERR_NOT_INIT: c_int = -5;
 const ERR_BUFFER_TOO_SMALL: c_int = -6;
 const ERR_HTTP: c_int = -7;
-
-/// Opaque wallet handle for C consumers.
-const WalletHandle = *wallet_mod.Wallet;
 
 fn copyToOut(src: []const u8, out_buf: [*c]u8, out_len: *usize) c_int {
     @memcpy(out_buf[0..src.len], src);
@@ -59,6 +62,11 @@ fn jsonStringify(value: std.json.Value, out_buf: [*c]u8, out_len: *usize) c_int 
 
 // ── Wallet lifecycle ────────────────────────────────────────────────────
 
+/// Initialize a Threaded I/O runtime.
+fn initThreadedIo() !std.Io.Threaded {
+    return std.Io.Threaded.init(alloc, .{ .environ = .empty });
+}
+
 /// Create a wallet from a 32-byte private key. Returns an opaque handle.
 /// The wallet uses an in-memory storage manager (no persistence yet).
 export fn bsvwallet_create(
@@ -70,15 +78,29 @@ export fn bsvwallet_create(
     const chain_val: wallet_mod.Chain = if (chain == 0) .main else .@"test";
     const mgr = storage.WalletStorageManager.init(alloc);
 
-    const wallet_ptr = alloc.create(wallet_mod.Wallet) catch return ERR_ALLOC;
-    wallet_ptr.* = wallet_mod.Wallet.init(alloc, .{
-        .private_key = pk,
-        .chain = chain_val,
-        .wallet_services = undefined, // No services connected yet
-        .storage_manager = mgr,
-    }) catch {
-        alloc.destroy(wallet_ptr);
-        return ERR_WALLET;
+    var threaded_io = initThreadedIo() catch return ERR_ALLOC;
+
+    const wallet_ptr = alloc.create(WalletHandle) catch {
+        threaded_io.deinit();
+        return ERR_ALLOC;
+    };
+    wallet_ptr.* = WalletHandle{
+        .wallet = wallet_mod.Wallet.init(alloc, .{
+            .private_key = pk,
+            .chain = chain_val,
+            .wallet_services = undefined, // No services connected yet
+            .storage_manager = mgr,
+        }) catch {
+            alloc.destroy(wallet_ptr);
+            threaded_io.deinit();
+            return ERR_WALLET;
+        },
+        .threaded_io = threaded_io,
+        .remote_client = null,
+        .auth_fetch = null,
+        .onesat_services = null,
+        .wallet_url = null,
+        .backend_url = null,
     };
 
     out_handle.* = wallet_ptr;
@@ -103,21 +125,28 @@ export fn bsvwallet_create_remote(
         url_slice = url_slice[0 .. url_slice.len - 1];
     }
 
+    var threaded_io = initThreadedIo() catch return ERR_ALLOC;
+
     // Build the wallet storage URL: {backend}/1sat/wallet
-    const wallet_url = std.fmt.allocPrint(alloc, "{s}/1sat/wallet", .{url_slice}) catch return ERR_ALLOC;
+    const wallet_url = std.fmt.allocPrint(alloc, "{s}/1sat/wallet", .{url_slice}) catch {
+        threaded_io.deinit();
+        return ERR_ALLOC;
+    };
 
     // Create auth client for this private key
     const af_ptr = alloc.create(auth.AuthFetch) catch {
         alloc.free(wallet_url);
+        threaded_io.deinit();
         return ERR_ALLOC;
     };
-    af_ptr.* = auth.AuthFetch.init(alloc, getIo(), pk);
+    af_ptr.* = auth.AuthFetch.init(alloc, threaded_io.io(), pk);
 
     // Create remote storage client pointing at the wallet storage endpoint
     const remote_ptr = alloc.create(storage.RemoteStorageClient) catch {
         af_ptr.deinit();
         alloc.destroy(af_ptr);
         alloc.free(wallet_url);
+        threaded_io.deinit();
         return ERR_ALLOC;
     };
     remote_ptr.* = storage.RemoteStorageClient.init(alloc, af_ptr, wallet_url);
@@ -128,25 +157,63 @@ export fn bsvwallet_create_remote(
 
     // Set up OneSat services for chain queries
     const onesat_chain: services.OneSatServices.Chain = if (chain == 0) .main else .@"test";
-    var onesat = services.OneSatServices.init(alloc, onesat_chain, url_slice, getIo());
-
-    const wallet_ptr = alloc.create(wallet_mod.Wallet) catch {
+    const onesat_ptr = alloc.create(services.OneSatServices) catch {
+        remote_ptr.deinit();
         alloc.destroy(remote_ptr);
         af_ptr.deinit();
         alloc.destroy(af_ptr);
+        alloc.free(wallet_url);
+        threaded_io.deinit();
         return ERR_ALLOC;
     };
-    wallet_ptr.* = wallet_mod.Wallet.init(alloc, .{
-        .private_key = pk,
-        .chain = chain_val,
-        .wallet_services = onesat.walletServices(),
-        .storage_manager = mgr,
-    }) catch {
-        alloc.destroy(wallet_ptr);
+    onesat_ptr.* = services.OneSatServices.init(alloc, onesat_chain, url_slice, threaded_io.io());
+
+    const backend_url_owned = alloc.dupe(u8, url_slice) catch {
+        alloc.destroy(onesat_ptr);
+        remote_ptr.deinit();
         alloc.destroy(remote_ptr);
         af_ptr.deinit();
         alloc.destroy(af_ptr);
-        return ERR_WALLET;
+        alloc.free(wallet_url);
+        threaded_io.deinit();
+        return ERR_ALLOC;
+    };
+
+    const wallet_ptr = alloc.create(WalletHandle) catch {
+        alloc.free(backend_url_owned);
+        alloc.destroy(onesat_ptr);
+        remote_ptr.deinit();
+        alloc.destroy(remote_ptr);
+        af_ptr.deinit();
+        alloc.destroy(af_ptr);
+        alloc.free(wallet_url);
+        threaded_io.deinit();
+        return ERR_ALLOC;
+    };
+    wallet_ptr.* = WalletHandle{
+        .wallet = wallet_mod.Wallet.init(alloc, .{
+            .private_key = pk,
+            .chain = chain_val,
+            .wallet_services = onesat_ptr.*.walletServices(),
+            .storage_manager = mgr,
+        }) catch {
+            alloc.destroy(wallet_ptr);
+            alloc.free(backend_url_owned);
+            alloc.destroy(onesat_ptr);
+            remote_ptr.deinit();
+            alloc.destroy(remote_ptr);
+            af_ptr.deinit();
+            alloc.destroy(af_ptr);
+            alloc.free(wallet_url);
+            threaded_io.deinit();
+            return ERR_WALLET;
+        },
+        .threaded_io = threaded_io,
+        .remote_client = remote_ptr,
+        .auth_fetch = af_ptr,
+        .onesat_services = onesat_ptr,
+        .wallet_url = wallet_url,
+        .backend_url = backend_url_owned,
     };
 
     out_handle.* = wallet_ptr;
@@ -155,9 +222,24 @@ export fn bsvwallet_create_remote(
 
 /// Destroy a wallet and free its resources.
 export fn bsvwallet_destroy(handle: ?*anyopaque) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
-    wallet.deinit();
-    alloc.destroy(wallet);
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    wh.*.wallet.deinit();
+    if (wh.*.remote_client) |rc| {
+        rc.deinit();
+        alloc.destroy(rc);
+    }
+    if (wh.*.auth_fetch) |af| {
+        af.deinit();
+        alloc.destroy(af);
+    }
+    if (wh.*.onesat_services) |os| {
+        os.deinit();
+        alloc.destroy(os);
+    }
+    if (wh.*.wallet_url) |wu| alloc.free(wu);
+    if (wh.*.backend_url) |bu| alloc.free(bu);
+    wh.*.threaded_io.deinit();
+    alloc.destroy(wh);
     return OK;
 }
 
@@ -170,8 +252,8 @@ export fn bsvwallet_get_public_key(
     out_buf: [*c]u8,
     out_len: *usize,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
-    const pubkey = wallet.getPublicKey();
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const pubkey = wh.*.wallet.getPublicKey();
     return copyToOut(pubkey, out_buf, out_len);
 }
 
@@ -184,26 +266,114 @@ export fn bsvwallet_create_action(
     out_buf: [*c]u8,
     out_len: *usize,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
     const json_str = args_json[0..args_len];
 
     // Parse the JSON args
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_str, .{}) catch return ERR_JSON;
     defer parsed.deinit();
 
-    // Extract fields for CreateActionArgs
+    const root = if (parsed.value == .object) parsed.value.object else return ERR_JSON;
+
     const description = blk: {
-        if (parsed.value == .object) {
-            if (parsed.value.object.get("description")) |d| {
-                if (d == .string) break :blk d.string;
-            }
+        if (root.get("description")) |d| {
+            if (d == .string) break :blk d.string;
         }
         break :blk "";
     };
 
-    const result = wallet.createAction(.{
+    // Parse outputs array
+    const outputs_val = root.get("outputs") orelse return ERR_JSON;
+    const outputs_arr = if (outputs_val == .array) outputs_val.array.items else return ERR_JSON;
+
+    // Build ActionOutput slice on page_allocator
+    const outputs = alloc.alloc(signer_types.ActionOutput, outputs_arr.len) catch return ERR_ALLOC;
+    defer alloc.free(outputs);
+
+    for (outputs_arr, 0..) |item, i| {
+        if (item != .object) return ERR_JSON;
+        const obj = item.object;
+
+        const locking_script = blk: {
+            if (obj.get("lockingScript")) |ls| {
+                if (ls == .string) break :blk ls.string;
+            }
+            return ERR_JSON;
+        };
+        const satoshis: u64 = blk: {
+            if (obj.get("satoshis")) |s| {
+                if (s == .integer) break :blk @intCast(s.integer);
+            }
+            return ERR_JSON;
+        };
+
+        const out_desc: ?[]const u8 = blk: {
+            if (obj.get("description")) |d| {
+                if (d == .string) break :blk d.string;
+            }
+            break :blk null;
+        };
+        const basket: ?[]const u8 = blk: {
+            if (obj.get("basket")) |b| {
+                if (b == .string) break :blk b.string;
+            }
+            break :blk null;
+        };
+
+        outputs[i] = .{
+            .locking_script = locking_script,
+            .satoshis = satoshis,
+            .description = out_desc,
+            .basket = basket,
+        };
+    }
+
+    // Parse optional labels
+    var labels_buf: [64][]const u8 = undefined;
+    var labels_slice: ?[]const []const u8 = null;
+    if (root.get("labels")) |labels_val| {
+        if (labels_val == .array) {
+            const larr = labels_val.array.items;
+            const count = @min(larr.len, labels_buf.len);
+            for (larr[0..count], 0..) |lbl, i| {
+                if (lbl == .string) {
+                    labels_buf[i] = lbl.string;
+                } else {
+                    labels_buf[i] = "";
+                }
+            }
+            labels_slice = labels_buf[0..count];
+        }
+    }
+
+    // Parse optional options
+    var options: signer_types.CreateActionOptions = .{};
+    if (root.get("options")) |opts_val| {
+        if (opts_val == .object) {
+            const opts = opts_val.object;
+            if (opts.get("noSend")) |v| {
+                if (v == .bool) options.no_send = v.bool;
+            }
+            if (opts.get("signAndProcess")) |v| {
+                if (v == .bool) options.sign_and_process = v.bool;
+            }
+            if (opts.get("acceptDelayedBroadcast")) |v| {
+                if (v == .bool) options.accept_delayed_broadcast = v.bool;
+            }
+            if (opts.get("returnTXIDOnly")) |v| {
+                if (v == .bool) options.return_txid_only = v.bool;
+            }
+            if (opts.get("randomizeOutputs")) |v| {
+                if (v == .bool) options.randomize_outputs = v.bool;
+            }
+        }
+    }
+
+    const result = wh.*.wallet.createAction(.{
         .description = description,
-        .outputs = &.{},
+        .outputs = outputs,
+        .labels = labels_slice,
+        .options = options,
     }) catch return ERR_WALLET;
 
     return jsonStringify(result.raw, out_buf, out_len);
@@ -218,24 +388,87 @@ export fn bsvwallet_sign_action(
     out_buf: [*c]u8,
     out_len: *usize,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
     const json_str = args_json[0..args_len];
 
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_str, .{}) catch return ERR_JSON;
     defer parsed.deinit();
 
+    const root = if (parsed.value == .object) parsed.value.object else return ERR_JSON;
+
     const reference = blk: {
-        if (parsed.value == .object) {
-            if (parsed.value.object.get("reference")) |r| {
-                if (r == .string) break :blk r.string;
-            }
+        if (root.get("reference")) |r| {
+            if (r == .string) break :blk r.string;
         }
         break :blk "";
     };
 
-    const result = wallet.signAction(.{
+    // Parse spends object: {"0": {"unlockingScript":"hex", ...}, ...}
+    const spends_val = root.get("spends") orelse return ERR_JSON;
+    var spends_count: usize = 0;
+    if (spends_val == .object) {
+        spends_count = spends_val.object.count();
+    } else {
+        return ERR_JSON;
+    }
+
+    const spends = alloc.alloc(signer_types.SignActionSpend, spends_count) catch return ERR_ALLOC;
+    defer alloc.free(spends);
+
+    var spend_idx: usize = 0;
+    var it = spends_val.object.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const val = entry.value_ptr.*;
+
+        if (val != .object) return ERR_JSON;
+        const spend_obj = val.object;
+
+        const input_index: u32 = std.fmt.parseInt(u32, key, 10) catch return ERR_JSON;
+
+        const unlocking_script = blk: {
+            if (spend_obj.get("unlockingScript")) |us| {
+                if (us == .string) break :blk us.string;
+            }
+            return ERR_JSON;
+        };
+
+        const sequence_number: ?u32 = blk: {
+            if (spend_obj.get("sequenceNumber")) |sn| {
+                if (sn == .integer) break :blk @intCast(sn.integer);
+            }
+            break :blk null;
+        };
+
+        spends[spend_idx] = .{
+            .input_index = input_index,
+            .unlocking_script = unlocking_script,
+            .sequence_number = sequence_number,
+        };
+        spend_idx += 1;
+    }
+
+    // Parse optional options
+    var options: signer_types.SignActionOptions = .{};
+    if (root.get("options")) |opts_val| {
+        if (opts_val == .object) {
+            const opts = opts_val.object;
+            if (opts.get("acceptDelayedBroadcast")) |v| {
+                if (v == .bool) options.accept_delayed_broadcast = v.bool;
+            }
+            if (opts.get("returnTXIDOnly")) |v| {
+                if (v == .bool) options.return_txid_only = v.bool;
+            }
+            if (opts.get("noSend")) |v| {
+                if (v == .bool) options.no_send = v.bool;
+            }
+        }
+    }
+
+    const result = wh.*.wallet.signAction(.{
         .reference = reference,
-        .spends = &.{},
+        .spends = spends[0..spend_idx],
+        .options = options,
     }) catch return ERR_WALLET;
 
     return jsonStringify(result.raw, out_buf, out_len);
@@ -250,7 +483,7 @@ export fn bsvwallet_list_outputs(
     out_buf: [*c]u8,
     out_len: *usize,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
 
     var basket: ?[]const u8 = null;
     var basket_owned: ?[]u8 = null;
@@ -278,7 +511,7 @@ export fn bsvwallet_list_outputs(
         }
     }
 
-    const result = wallet.listOutputs(.{
+    const result = wh.*.wallet.listOutputs(.{
         .basket = basket,
         .limit = limit,
         .offset = offset,
@@ -301,7 +534,7 @@ export fn bsvwallet_list_actions(
     out_buf: [*c]u8,
     out_len: *usize,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
 
     var limit: ?u32 = null;
     var offset: ?u32 = null;
@@ -320,7 +553,7 @@ export fn bsvwallet_list_actions(
         }
     }
 
-    const result = wallet.listActions(.{
+    const result = wh.*.wallet.listActions(.{
         .limit = limit,
         .offset = offset,
     }) catch return ERR_WALLET;
@@ -336,8 +569,8 @@ export fn bsvwallet_sign_data(
     out_sig: [*c]u8,
     out_sig_len: *usize,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
-    const sig = wallet.createSignature(data[0..data_len]) catch return ERR_WALLET;
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const sig = wh.*.wallet.createSignature(data[0..data_len]) catch return ERR_WALLET;
     const sig_slice = sig.asSlice();
     return copyToOut(sig_slice, out_sig, out_sig_len);
 }
@@ -349,8 +582,8 @@ export fn bsvwallet_get_balance(
     out_confirmed: *i64,
     out_unconfirmed: *i64,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
-    const balance = wallet.getBalance() catch return ERR_WALLET;
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const balance = wh.*.wallet.getBalance() catch return ERR_WALLET;
     out_confirmed.* = balance.confirmed;
     out_unconfirmed.* = balance.unconfirmed;
     return OK;
@@ -372,8 +605,8 @@ export fn bsvwallet_get_balance_remote(
     if (rc != OK) return rc;
     defer _ = bsvwallet_destroy(handle);
 
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
-    const balance = wallet.getBalance() catch return ERR_WALLET;
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const balance = wh.*.wallet.getBalance() catch return ERR_WALLET;
     out_confirmed.* = balance.confirmed;
     out_unconfirmed.* = balance.unconfirmed;
     return OK;
@@ -400,14 +633,14 @@ export fn bsvwallet_get_derived_public_key(
     out_pubkey: [*c]u8,
     out_pubkey_len: *usize,
 ) c_int {
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
 
     const cp_slice: ?[]const u8 = if (counterparty_len > 0)
         counterparty[0..counterparty_len]
     else
         null;
 
-    const result = wallet.getDerivedPublicKey(.{
+    const result = wh.*.wallet.getDerivedPublicKey(.{
         .protocol_id = protocol_id[0..protocol_id_len],
         .key_id = key_id[0..key_id_len],
         .security_level = security_level,
@@ -420,9 +653,6 @@ export fn bsvwallet_get_derived_public_key(
 
 // ── Authenticated HTTP (BRC-100) ───────────────────────────────────────
 
-/// Opaque auth client handle for C consumers.
-const AuthHandle = *auth.AuthFetch;
-
 /// Create an authenticated HTTP client from a 32-byte private key.
 /// Returns an opaque handle via out_handle.
 export fn bsvauth_create(
@@ -431,8 +661,16 @@ export fn bsvauth_create(
 ) c_int {
     const pk = ec.PrivateKey.fromBytes(privkey[0..32].*) catch return ERR_INVALID_INPUT;
 
-    const af_ptr = alloc.create(auth.AuthFetch) catch return ERR_ALLOC;
-    af_ptr.* = auth.AuthFetch.init(alloc, getIo(), pk);
+    var threaded_io = initThreadedIo() catch return ERR_ALLOC;
+
+    const af_ptr = alloc.create(AuthHandle) catch {
+        threaded_io.deinit();
+        return ERR_ALLOC;
+    };
+    af_ptr.* = AuthHandle{
+        .auth_fetch = auth.AuthFetch.init(alloc, threaded_io.io(), pk),
+        .threaded_io = threaded_io,
+    };
 
     out_handle.* = af_ptr;
     return OK;
@@ -440,9 +678,10 @@ export fn bsvauth_create(
 
 /// Destroy an authenticated HTTP client and free its resources.
 export fn bsvauth_destroy(handle: ?*anyopaque) c_int {
-    const af: AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
-    af.deinit();
-    alloc.destroy(af);
+    const ah: *AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    ah.*.auth_fetch.deinit();
+    ah.*.threaded_io.deinit();
+    alloc.destroy(ah);
     return OK;
 }
 
@@ -459,10 +698,10 @@ export fn bsvauth_get(
     out_body: [*c]u8,
     out_body_len: *usize,
 ) c_int {
-    const af: AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const ah: *AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
     const url_slice = url[0..url_len];
 
-    var resp = af.get(url_slice) catch return ERR_HTTP;
+    var resp = ah.*.auth_fetch.get(url_slice) catch return ERR_HTTP;
     defer resp.deinit();
 
     out_status.* = resp.status;
@@ -490,11 +729,11 @@ export fn bsvauth_post_json(
     out_body: [*c]u8,
     out_body_len: *usize,
 ) c_int {
-    const af: AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const ah: *AuthHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
     const url_slice = url[0..url_len];
     const body_slice = body[0..body_len];
 
-    var resp = af.postJson(url_slice, body_slice) catch return ERR_HTTP;
+    var resp = ah.*.auth_fetch.postJson(url_slice, body_slice) catch return ERR_HTTP;
     defer resp.deinit();
 
     out_status.* = resp.status;
@@ -529,7 +768,7 @@ export fn bsvwallet_create_action_remote(
     if (rc != OK) return rc;
     defer _ = bsvwallet_destroy(handle);
 
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
     const json_str = args_json[0..args_json_len];
 
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_str, .{}) catch return ERR_JSON;
@@ -631,7 +870,7 @@ export fn bsvwallet_create_action_remote(
         }
     }
 
-    const result = wallet.createAction(.{
+    const result = wh.*.wallet.createAction(.{
         .description = description,
         .outputs = outputs,
         .labels = labels_slice,
@@ -660,7 +899,7 @@ export fn bsvwallet_sign_action_remote(
     if (rc != OK) return rc;
     defer _ = bsvwallet_destroy(handle);
 
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
     const json_str = args_json[0..args_json_len];
 
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_str, .{}) catch return ERR_JSON;
@@ -737,7 +976,7 @@ export fn bsvwallet_sign_action_remote(
         }
     }
 
-    const result = wallet.signAction(.{
+    const result = wh.*.wallet.signAction(.{
         .reference = reference,
         .spends = spends[0..spend_idx],
         .options = options,
@@ -771,10 +1010,10 @@ export fn bsvwallet_inscribe_remote(
     if (rc != OK) return rc;
     defer _ = bsvwallet_destroy(handle);
 
-    const wallet: WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
+    const wh: *WalletHandle = @ptrCast(@alignCast(handle orelse return ERR_NOT_INIT));
 
     // Derive an inscription key via BRC-42/43 protocol "1sat-ordinals"
-    const derived = wallet.getDerivedPublicKey(.{
+    const derived = wh.*.wallet.getDerivedPublicKey(.{
         .protocol_id = "1sat-ordinals",
         .key_id = "1",
         .security_level = 0,
@@ -856,7 +1095,7 @@ export fn bsvwallet_inscribe_remote(
 
     const description = if (name_len > 0) app_name[0..name_len] else "inscribe";
 
-    const result = wallet.createAction(.{
+    const result = wh.*.wallet.createAction(.{
         .description = description,
         .outputs = &outputs,
         .labels = labels_slice,
