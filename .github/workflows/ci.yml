@@ -7,16 +7,42 @@ on:
 
 jobs:
   test:
+    name: Test (Zig 0.16.0)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        zig: ["0.16.0", "master"]
     steps:
       - uses: actions/checkout@v5
-      - uses: mlugg/setup-zig@v2
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
         with:
-          version: ${{ matrix.zig }}
+          version: "0.16.0"
+      - name: Prepare Zig global cache
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
+        run: |
+          mkdir -p "${ZIG_GLOBAL_CACHE_DIR}/tmp"
+          # Persist for subsequent steps
+          echo "ZIG_GLOBAL_CACHE_DIR=${ZIG_GLOBAL_CACHE_DIR}" >> $GITHUB_ENV
+      - name: Build (static libs + C ABI exports)
+        run: zig build --summary all
+      - name: Test (ReleaseFast, UB checks enabled)
+        run: zig build test -Doptimize=ReleaseFast --summary all
+
+  test-master:
+    name: Test (Zig master, soft)
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: "master"
+      - name: Prepare Zig global cache
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-master-cache
+        run: |
+          mkdir -p "${ZIG_GLOBAL_CACHE_DIR}/tmp"
+          echo "ZIG_GLOBAL_CACHE_DIR=${ZIG_GLOBAL_CACHE_DIR}" >> $GITHUB_ENV
       - name: Build (static libs + C ABI exports)
         run: zig build --summary all
       - name: Test (ReleaseFast, UB checks enabled)

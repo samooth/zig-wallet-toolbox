@@ -4,7 +4,10 @@
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0xf125ec13a2d567c9,
     .dependencies = .{
-        .bsvz = .{ .path = "../bsvz" },
+        .bsvz = .{
+            .url = "https://github.com/samooth/bsvz/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "bsvz-0.1.0-wvsL-fyNFQAWFhifuU4QuPB1vQ0YIVhBJTVTgitNt7wI",
+        },
     },
     .paths = .{
         "build.zig",
