@@ -1,9 +1,23 @@
 const std = @import("std");
 
+/// HTTP response with parsed JSON body.
+///
+/// Ownership: `body` (and `raw`) borrow from an internal parse arena that is
+/// released by `deinit()`. Callers must either consume the data before calling
+/// `deinit()` or deep-copy it out (see `src/http/json_rpc.zig deepCopyValue`).
 pub const JsonResponse = struct {
     status: std.http.Status,
     body: std.json.Value,
     raw: []u8,
+    parsed: ?std.json.Parsed(std.json.Value) = null,
+
+    /// Free all memory backing `body` and `raw`.
+    pub fn deinit(self: *JsonResponse) void {
+        if (self.parsed) |*p| p.deinit();
+        self.parsed = null;
+        self.body = .null;
+        self.raw = &.{};
+    }
 };
 
 pub const BinaryResponse = struct {
@@ -54,9 +68,8 @@ fn doRequest(
     };
 }
 
-fn parseJson(allocator: std.mem.Allocator, raw: []u8) !std.json.Value {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    return parsed.value;
+fn parseJson(allocator: std.mem.Allocator, raw: []u8) !std.json.Parsed(std.json.Value) {
+    return try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
 }
 
 pub fn getJson(
@@ -66,11 +79,12 @@ pub fn getJson(
     extra_headers: []const std.http.Header,
 ) !JsonResponse {
     const result = try doRequest(allocator, io, .GET, url, extra_headers, null);
-    const value = try parseJson(allocator, result.body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.body, .{});
     return .{
         .status = result.status,
-        .body = value,
+        .body = parsed.value,
         .raw = result.body,
+        .parsed = parsed,
     };
 }
 
@@ -82,11 +96,12 @@ pub fn postJson(
     extra_headers: []const std.http.Header,
 ) !JsonResponse {
     const result = try doRequest(allocator, io, .POST, url, extra_headers, body_bytes);
-    const value = try parseJson(allocator, result.body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.body, .{});
     return .{
         .status = result.status,
-        .body = value,
+        .body = parsed.value,
         .raw = result.body,
+        .parsed = parsed,
     };
 }
 

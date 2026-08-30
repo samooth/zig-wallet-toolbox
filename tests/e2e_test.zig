@@ -54,12 +54,15 @@ fn getIo() std.Io {
 // The live network call is soft: on failure it logs and skips the chain-height
 // assertion so CI stays deterministic; the storage lifecycle always runs.
 test "e2e: wallet storage lifecycle (local by default, remote via WALLET_STORAGE_URL)" {
-    // Use page_allocator for e2e test — the JSON-RPC response parsing has
-    // intentional ownership transfer that the testing allocator flags as leaks.
-    // The RPC result values reference memory in the parsed arena which can't
-    // be freed until the caller is done with the result. This is a known v1
-    // limitation tracked for cleanup.
-    const allocator = std.heap.page_allocator;
+    // Storage-provider results are heap JSON with mixed ownership (some
+    // backends embed static literals, remote results are deep-copied). An
+    // arena makes lifetime management trivial and leak-free for the whole
+    // test scope; the old page_allocator workaround for the JSON-RPC parse
+    // arena (which leaked per-RPC) is gone — rpcCall now deep-copies and
+    // frees its parse arena on every call (see remote.zig).
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const gpa = std.heap.page_allocator;
 
     const storage_url_owned = try getStorageUrl(gpa);

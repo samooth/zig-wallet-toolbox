@@ -82,15 +82,13 @@ pub const WalletStorageManager = struct {
         return WalletStorageProvider.init(self);
     }
 
-    pub fn destroy(_: *WalletStorageManager) void {}
-
+    /// WalletStorageManager does NOT own storage providers: it holds vtable
+    /// references set via setActive/addBackup. Callers retain ownership and
+    /// are responsible for deiniting the underlying clients themselves.
+    /// (Previously deinit destroyed active+backups, causing double-destroy
+    /// when callers also deinited their own clients.)
     pub fn deinit(self: *WalletStorageManager) void {
-        if (self.active) |active| {
-            active.destroy();
-        }
-        for (self.backups.items) |backup| {
-            backup.destroy();
-        }
+        self.active = null;
         self.backups.deinit(self.allocator);
     }
 };

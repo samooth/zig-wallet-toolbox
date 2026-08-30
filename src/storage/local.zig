@@ -56,13 +56,15 @@ pub const LocalStorageClient = struct {
         if (self.users.getPtr(identity_key)) |user| {
             return user;
         }
-        const owned_key = try self.allocator.dupe(u8, identity_key);
+        // Map key and UserData.identity_key must be separate allocations:
+        // destroy() frees both, so sharing one dupe would double-free.
+        const key = try self.allocator.dupe(u8, identity_key);
         const user = UserData{
-            .identity_key = owned_key,
+            .identity_key = try self.allocator.dupe(u8, identity_key),
             .is_new = true,
         };
-        try self.users.put(owned_key, user);
-        return self.users.getPtr(owned_key).?;
+        try self.users.put(key, user);
+        return self.users.getPtr(key).?;
     }
 
     fn getOrCreateOutputs(self: *LocalStorageClient, identity_key: []const u8) !*OutputData {
@@ -107,19 +109,12 @@ pub const LocalStorageClient = struct {
 
     pub fn createAction(self: *LocalStorageClient, _: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
         const reference = try std.fmt.allocPrint(self.allocator, "ref_{d}", .{util.nowMilli()});
-        defer self.allocator.free(reference);
 
-        const identity_key = auth.identity_key;
-        const owned_ref = try self.allocator.dupe(u8, reference);
-        defer self.allocator.free(owned_ref);
-        const owned_key = try self.allocator.dupe(u8, identity_key);
-        defer self.allocator.free(owned_key);
-        const args_copy = args; // Note: shallow copy, caller owns original
-
+        // ActionData owns its slices; destroy() frees them. Do NOT free here.
         const action = ActionData{
-            .reference = owned_ref,
-            .identity_key = owned_key,
-            .args = args_copy,
+            .reference = reference,
+            .identity_key = try self.allocator.dupe(u8, auth.identity_key),
+            .args = args, // Note: shallow copy, caller owns original
             .created_at = util.nowSecs(),
         };
         try self.actions.put(try self.allocator.dupe(u8, reference), action);
@@ -169,6 +164,14 @@ pub const LocalStorageClient = struct {
         return types.parseSharesJson(allocator, stored);
     }
 
+    /// Free a JSON value previously returned by one of this client's methods.
+    /// Results own their memory in the allocator passed to the producing call
+    /// (`makeAvailable`, `findOrInsertUser`, `createAction`, …); release them
+    /// with this once done.
+    pub fn freeResult(_: *LocalStorageClient, allocator: std.mem.Allocator, value: std.json.Value) void {
+        freeJsonValue(allocator, value);
+    }
+
     pub fn destroy(self: *LocalStorageClient) void {
         var users_it = self.users.iterator();
         while (users_it.next()) |entry| {
@@ -208,3 +211,24 @@ pub const LocalStorageClient = struct {
         self.destroy();
     }
 };
+
+/// Recursively free a `std.json.Value` allocated with `allocator` (objects,
+/// arrays, and strings). Scalarm values are trivial and ignored.
+pub fn freeJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void {
+    switch (value) {
+        .string => |s| allocator.free(s),
+        .array => |arr| {
+            for (arr.items) |item| freeJsonValue(allocator, item);
+            var arr_mut = arr; arr_mut.deinit();
+        },
+        .object => |obj| {
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                freeJsonValue(allocator, entry.value_ptr.*);
+            }
+            var obj_mut = obj; obj_mut.deinit(allocator);
+        },
+        else => {},
+    }
+}

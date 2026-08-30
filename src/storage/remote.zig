@@ -45,7 +45,12 @@ pub const RemoteStorageClient = struct {
         }
 
         if (parsed.result) |result| {
-            return result;
+            // The result borrows memory from the parse arena (`parsed`), which
+            // is freed below. Deep-copy it into the caller's allocator so the
+            // returned value is fully owned and independently freeable.
+            const owned = try json_rpc.deepCopyValue(allocator, result);
+            parsed.deinit();
+            return owned;
         }
 
         parsed.deinit();
@@ -59,6 +64,29 @@ pub const RemoteStorageClient = struct {
             try obj.put(self.allocator, "storageIdentityKey", .{ .string = sik });
         }
         return .{ .object = obj };
+    }
+
+    /// Free a value previously returned by one of the RPC-backed methods
+    /// (makeAvailable/findOrInsertUser/…): deep-copied results own all their
+    /// memory in `allocator`, and this releases it. Callers no longer need an
+    /// arena or page_allocator workaround for RPC results.
+    pub fn freeResult(self: *RemoteStorageClient, allocator: std.mem.Allocator, value: std.json.Value) void {
+        switch (value) {
+            .string => |s| allocator.free(s),
+            .array => |arr| {
+                for (arr.items) |item| self.freeResult(allocator, item);
+                var arr_mut = arr; arr_mut.deinit();
+            },
+            .object => |obj| {
+                var it = obj.iterator();
+                while (it.next()) |entry| {
+                    allocator.free(entry.key_ptr.*);
+                    self.freeResult(allocator, entry.value_ptr.*);
+                }
+                var obj_mut = obj; obj_mut.deinit(allocator);
+            },
+            else => {},
+        }
     }
 
     pub fn makeAvailable(self: *RemoteStorageClient, allocator: std.mem.Allocator) anyerror!std.json.Value {

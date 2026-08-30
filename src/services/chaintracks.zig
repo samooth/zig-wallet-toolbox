@@ -25,7 +25,8 @@ pub const ChaintracksClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/tip", .{ self.host, base_path });
         defer self.allocator.free(url);
 
-        const result = try http.getJson(self.allocator, self.io, url, &.{});
+        var result = try http.getJson(self.allocator, self.io, url, &.{});
+        defer result.deinit();
         if (result.status != .ok) return error.HttpRequestFailed;
 
         return @intCast(result.body.object.get("height").?.integer);
@@ -53,7 +54,8 @@ pub const ChaintracksClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/header/height/{d}", .{ self.host, base_path, height });
         defer self.allocator.free(url);
 
-        const result = http.getJson(self.allocator, self.io, url, &.{}) catch return null;
+        var result = http.getJson(self.allocator, self.io, url, &.{}) catch return null;
+        defer result.deinit();
         if (result.status != .ok) return null;
 
         return try parseBlockHeader(result.body);
@@ -63,7 +65,8 @@ pub const ChaintracksClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/header/hash/{s}", .{ self.host, base_path, hash });
         defer self.allocator.free(url);
 
-        const result = http.getJson(self.allocator, self.io, url, &.{}) catch return null;
+        var result = http.getJson(self.allocator, self.io, url, &.{}) catch return null;
+        defer result.deinit();
         if (result.status != .ok) return null;
 
         return try parseBlockHeader(result.body);

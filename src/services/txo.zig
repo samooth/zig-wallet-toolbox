@@ -30,23 +30,25 @@ pub const TxoClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/{s}{s}", .{ self.host, base_path, outpoint, qs });
         defer self.allocator.free(url);
 
-        const result = try http.getJson(self.allocator, self.io, url, &.{});
+        var result = try http.getJson(self.allocator, self.io, url, &.{});
+        defer result.deinit();
         if (result.status != .ok) return error.HttpRequestFailed;
 
-        return parseIndexedOutput(result.body);
+        return try parseIndexedOutput(self.allocator, result.body);
     }
 
     pub fn getSpend(self: *TxoClient, outpoint: []const u8) !?[]const u8 {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}/{s}/spend", .{ self.host, base_path, outpoint });
         defer self.allocator.free(url);
 
-        const result = try http.getJson(self.allocator, self.io, url, &.{});
+        var result = try http.getJson(self.allocator, self.io, url, &.{});
+        defer result.deinit();
         if (result.status != .ok) return error.HttpRequestFailed;
 
         const obj = result.body.object;
         const val = obj.get("spendTxid") orelse return null;
         return switch (val) {
-            .string => |s| s,
+            .string => |s| try self.allocator.dupe(u8, s),
             .null => null,
             else => null,
         };
@@ -65,9 +67,11 @@ pub const TxoClient = struct {
         };
 
         const result = try http.postJson(self.allocator, self.io, url, body, &headers);
-        if (result.status != .ok) return error.HttpRequestFailed;
+        var resp = result;
+        defer resp.deinit();
+        if (resp.status != .ok) return error.HttpRequestFailed;
 
-        const arr = switch (result.body) {
+        const arr = switch (resp.body) {
             .array => |a| a,
             else => return error.UnexpectedJsonType,
         };
@@ -76,12 +80,12 @@ pub const TxoClient = struct {
         try outputs.ensureTotalCapacity(self.allocator, arr.items.len);
         for (arr.items) |item| {
             switch (item) {
-                .object => outputs.appendAssumeCapacity(try parseIndexedOutput(item)),
+                .object => outputs.appendAssumeCapacity(try parseIndexedOutput(self.allocator, item)),
                 .null => {},
                 else => return error.UnexpectedJsonType,
             }
         }
-        return outputs.items;
+        return outputs.toOwnedSlice(self.allocator);
     }
 
     fn buildQueryString(opts: GetOptions) []const u8 {
@@ -103,12 +107,12 @@ pub const TxoClient = struct {
         return buf.toOwnedSlice(allocator);
     }
 
-    fn parseIndexedOutput(json: std.json.Value) !IndexedOutput {
+    fn parseIndexedOutput(allocator: std.mem.Allocator, json: std.json.Value) !IndexedOutput {
         const obj = json.object;
 
         return .{
             .outpoint = switch (obj.get("outpoint") orelse return error.MissingField) {
-                .string => |s| s,
+                .string => |s| try allocator.dupe(u8, s),
                 else => return error.UnexpectedJsonType,
             },
             .score = switch (obj.get("score") orelse return error.MissingField) {
@@ -132,7 +136,7 @@ pub const TxoClient = struct {
                 else => null,
             } else null,
             .spend = if (obj.get("spend")) |v| switch (v) {
-                .string => |s| s,
+                .string => |s| try allocator.dupe(u8, s),
                 .null => null,
                 else => null,
             } else null,

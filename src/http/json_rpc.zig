@@ -84,3 +84,30 @@ pub fn buildRequest(allocator: std.mem.Allocator, method: []const u8, params: st
 pub fn parseResponse(allocator: std.mem.Allocator, body_bytes: []const u8) !Response {
     return Response.fromJson(allocator, body_bytes);
 }
+
+/// Recursively copy a JSON value into `allocator`-owned memory. The returned
+/// value is fully independent of the source (typically a parse arena that is
+/// about to be freed), so callers own every string, key, and array element.
+pub fn deepCopyValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null, .bool, .integer, .float, .number_string => value,
+        .string => |s| .{ .string = try allocator.dupe(u8, s) },
+        .array => |arr| blk: {
+            var copy = std.json.Array.init(allocator);
+            try copy.ensureTotalCapacity(arr.items.len);
+            for (arr.items) |item| {
+                copy.appendAssumeCapacity(try deepCopyValue(allocator, item));
+            }
+            break :blk .{ .array = copy };
+        },
+        .object => |obj| blk: {
+            var copy = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                try copy.put(allocator, key, try deepCopyValue(allocator, entry.value_ptr.*));
+            }
+            break :blk .{ .object = copy };
+        },
+    };
+}
