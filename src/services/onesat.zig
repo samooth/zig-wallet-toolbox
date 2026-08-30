@@ -1,4 +1,5 @@
 const std = @import("std");
+const bsvz = @import("bsvz");
 const types = @import("types.zig");
 const util = @import("../util.zig");
 const WalletServices = @import("interface.zig").WalletServices;
@@ -69,15 +70,34 @@ pub const OneSatServices = struct {
             };
         };
 
-        // Parse block height from the proof binary (BRC-10 MerklePath format):
-        // The first 4 bytes after a varint blockHeight.
-        // For now, return proof bytes directly; block header lookup requires parsing blockHeight.
-        // TODO: Parse blockHeight from merkle path binary to fetch the corresponding header.
-        _ = allocator;
+        // Parse the proof (BRC-10 MerklePath binary) to extract the block
+        // height, then fetch the corresponding header from chaintracks.
+        var block_header: ?types.MerklePathBlockHeader = null;
+        if (bsvz.spv.MerklePath.parse(allocator, proof_bytes)) |path| {
+            var mp = path;
+            defer mp.deinit(allocator);
+
+            if (self.chaintracks.findHeaderForHeight(mp.block_height) catch null) |header| {
+                // Heap-allocate the hex fields: MerklePathBlockHeader holds
+                // slices, so stack buffers would dangle after return.
+                const root_hex = try allocator.alloc(u8, 64);
+                const hash_hex = try allocator.alloc(u8, 64);
+                _ = try bsvz.primitives.hex.encodeLower(&header.merkle_root, root_hex);
+                _ = try bsvz.primitives.hex.encodeLower(&header.hash, hash_hex);
+                block_header = .{
+                    .height = mp.block_height,
+                    .merkle_root = root_hex,
+                    .hash = hash_hex,
+                };
+            }
+        } else |parse_err| {
+            std.log.warn("getMerklePath: proof for {s} is not a parseable BRC-10 merkle path ({s}); returning raw proof only", .{ txid, @errorName(parse_err) });
+        }
+
         return .{
             .name = service_name,
             .merkle_path = proof_bytes,
-            .block_header = null,
+            .block_header = block_header,
         };
     }
 
@@ -180,12 +200,25 @@ pub const OneSatServices = struct {
         // The 1Sat API has no per-txid status endpoint; presence in BEEF
         // storage is the documented way to check whether a tx is known.
         _ = current_height;
-        _ = self.beef.getBeef(txid) catch |err| {
+        const beef_bytes = self.beef.getBeef(txid) catch |err| {
             std.log.err("getStatusForSingleTxid: failed to get beef for {s}: {s}", .{ txid, @errorName(err) });
             return .{ .txid = txid, .depth = null, .status = .unknown };
         };
-        // If beef returned data, tx is at least known.
-        // TODO: Parse BEEF to check for merkle proof (mined) vs no proof (known).
+        defer self.allocator.free(beef_bytes);
+
+        // Parse the BEEF: if the tx has an associated merkle proof (bump),
+        // it is mined; a tx present without a proof is merely known.
+        var parsed = bsvz.transaction.beef.newBeefFromBytes(self.allocator, beef_bytes) catch {
+            // Unparseable BEEF still proves the tx is known to the service.
+            return .{ .txid = txid, .depth = 0, .status = .known };
+        };
+        defer parsed.deinit();
+
+        if (parsed.findBump(txid)) |_| {
+            // Mined: a merkle path (bump) exists for this txid.
+            return .{ .txid = txid, .depth = 0, .status = .mined };
+        }
+
         return .{ .txid = txid, .depth = 0, .status = .known };
     }
 
