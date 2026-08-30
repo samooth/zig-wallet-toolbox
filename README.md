@@ -243,6 +243,7 @@ The share format is `bsvz.primitives.keyshares` (base58-encoded points + thresho
 | `keymanagement.PrivilegedKeyManager` | Derives a BRC-42 privileged key, splits it into Shamir shares (threshold reconstruction), and persists/recovers them via the active storage provider |
 | `keymanagement.PrivilegedKeyManager.encrypt` / `.decrypt` | Wallet-level AES-GCM encrypt/decrypt of arbitrary data under the privileged key (also on `Wallet.encrypt` / `Wallet.decrypt`) |
 | `keymanagement.splitShares` / `keymanagement.reconstructSecret` | Low-level Shamir split/reconstruct helpers over `bsvz.primitives.keyshares` |
+| `monitor.Monitor` / `monitor.Daemon` | Background transaction lifecycle: proof lookup, waiting-tx rebroadcast (attempt-capped), abandonment, and unfail recovery — one `runOnce` pass or a scheduled loop |
 | `services.WalletServices` | Vtable interface for blockchain network services |
 | `services.OneSatServices` | 1Sat API integration: Chaintracks, Arcade, BEEF, TXO |
 | `services.ChaintracksClient` | Block header and chain height queries |
@@ -334,6 +335,13 @@ const actions = try wallet.listActions(.{
 
 // Balance
 const balance = try wallet.getBalance(); // { .confirmed = 10000, .unconfirmed = 0 }
+
+// Failed actions (TS-SDK wire-compatible; unfail=true queues them for
+// Monitor recovery)
+const failed = try wallet.listFailedActions(.{}, false);
+
+// Stop tracking an output without spending it
+_ = try wallet.relinquishOutput("default", txid, 0);
 ```
 
 ### Authenticated HTTP
@@ -366,6 +374,21 @@ const height = try services.getHeight();
 const header = try services.getHeaderForHeight(allocator, height);
 const utxo = try services.getUtxoStatus(allocator, "txid_vout");
 ```
+
+### Monitor (background transaction lifecycle)
+
+```zig
+var monitor = wtb.monitor.Monitor.init(allocator, &storage_client, &services);
+// One pass (cron-style):
+const summary = monitor.runOnce();
+
+// Or a daemon loop (checked every interval; stop via the atomic flag):
+var stop = std.atomic.Value(bool).init(false);
+var daemon = wtb.monitor.Daemon{ .monitor = &monitor, .interval_ms = 30_000, .stop_flag = &stop };
+try daemon.run();
+```
+
+Each pass runs the Go-parity tasks: check for merkle proofs (mined txs -> completed), broadcast waiting transactions (attempt-capped), fail abandoned ones, and re-check 'unfail' rows queued by `listFailedActions(unfail=true)`.
 
 ## Development
 

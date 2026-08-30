@@ -62,7 +62,7 @@ pub const OneSatServices = struct {
 
     pub fn getMerklePath(self: *OneSatServices, allocator: std.mem.Allocator, txid: []const u8) !types.MerklePathResult {
         const proof_bytes = self.beef.getProof(txid) catch |err| {
-            std.log.err("getMerklePath: failed to get proof for {s}: {s}", .{ txid, @errorName(err) });
+            std.log.warn("getMerklePath: failed to get proof for {s}: {s}", .{ txid, @errorName(err) });
             return .{
                 .name = service_name,
                 .merkle_path = null,
@@ -104,7 +104,7 @@ pub const OneSatServices = struct {
     pub fn getRawTx(self: *OneSatServices, allocator: std.mem.Allocator, txid: []const u8) !types.RawTxResult {
         _ = allocator;
         const raw = self.beef.getRawTx(txid) catch |err| {
-            std.log.err("getRawTx: failed to get raw tx for {s}: {s}", .{ txid, @errorName(err) });
+            std.log.warn("getRawTx: failed to get raw tx for {s}: {s}", .{ txid, @errorName(err) });
             return .{
                 .txid = txid,
                 .name = service_name,
@@ -201,7 +201,7 @@ pub const OneSatServices = struct {
         // storage is the documented way to check whether a tx is known.
         _ = current_height;
         const beef_bytes = self.beef.getBeef(txid) catch |err| {
-            std.log.err("getStatusForSingleTxid: failed to get beef for {s}: {s}", .{ txid, @errorName(err) });
+            std.log.warn("getStatusForSingleTxid: failed to get beef for {s}: {s}", .{ txid, @errorName(err) });
             return .{ .txid = txid, .depth = null, .status = .unknown };
         };
         defer self.allocator.free(beef_bytes);
@@ -224,7 +224,7 @@ pub const OneSatServices = struct {
 
     pub fn getUtxoStatus(self: *OneSatServices, allocator: std.mem.Allocator, outpoint: []const u8) !types.UtxoStatusResult {
         const txo_result = self.txo.get(outpoint, .{}) catch |err| {
-            std.log.err("getUtxoStatus: failed to get txo for {s}: {s}", .{ outpoint, @errorName(err) });
+            std.log.warn("getUtxoStatus: failed to get txo for {s}: {s}", .{ outpoint, @errorName(err) });
             return .{
                 .name = service_name,
                 .status = .success,

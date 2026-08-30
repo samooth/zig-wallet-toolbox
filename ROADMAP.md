@@ -35,11 +35,15 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 
 ## Monitor
 
-- [ ] Background monitor daemon
-- [ ] Rebroadcast failed/pending transactions
-- [ ] Chain reorganization handling
-- [ ] Merkle proof acquisition for confirmed transactions
-- [ ] Sync pending transaction statuses
+- [x] Background monitor (`monitor.Monitor` + `monitor.Daemon` loop) with Go-parity tasks:
+  - [x] checkForProofs (merkle proof lookup -> completed + proof/height recorded)
+  - [x] sendWaiting (broadcast aged unprocessed txs, per-tx attempt cap)
+  - [x] failAbandoned (stale unprocessed -> failed)
+  - [x] unfailChecker ('unfail' recheck: mined -> completed, known -> unprocessed, unknown -> failed)
+- [ ] Reorg handling (orphaned block hashes, re-proving)
+- [ ] External broadcaster SSE events (Arcade push instead of polling)
+- [ ] Lease locking for multi-daemon deployments
+- [ ] Per-transaction history notes
 
 ## Certificates
 
@@ -58,8 +62,8 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 ## Wallet API Completeness
 
 - [x] `internalizeAction` (BEEF parse, outputs recorded, inputs marked spent, known_txs upsert; SQLite backend; tests)
-- [ ] `listFailedActions`
-- [ ] `relinquishOutput`
+- [x] `listFailedActions` (spec-op label, wire-compatible with TS/Go; `unfail` transitions for Monitor recovery)
+- [x] `relinquishOutput` (clear basket membership; SQLite + remote RPC; tests)
 - [x] `getBalance` (sum spendable outputs)
 - [ ] `requestSyncChunk` / sync state management
 - [ ] Pending sign actions local repo
