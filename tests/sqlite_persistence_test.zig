@@ -209,7 +209,7 @@ test "SqliteStorageClient concurrent access" {
     });
     defer wallet.deinit();
 
-    var refs: std.ArrayList([]const u8) = .{ .items = &[_][]const u8{}, .capacity = 0 };
+    var refs: std.ArrayList([]const u8) = .empty;
     defer refs.deinit(allocator);
 
     for (0..10) |i| {

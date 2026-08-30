@@ -135,7 +135,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config) !SqliteStorageClient {
         const outputs_arr = if (outputs_val == .array) outputs_val.array.items else return error.InvalidJsonArgs;
 
         // Parse outputs
-        var outputs_list: std.ArrayList(signer_types.ActionOutput) = .{ .items = &[_]signer_types.ActionOutput{}, .capacity = 0 };
+        var outputs_list: std.ArrayList(signer_types.ActionOutput) = .empty;
 try outputs_list.ensureTotalCapacity(self.allocator, outputs_arr.len);
         defer outputs_list.deinit(self.allocator);
 
@@ -171,7 +171,7 @@ try outputs_list.ensureTotalCapacity(self.allocator, outputs_arr.len);
             const tags = blk: {
                 if (args_obj.get("tags")) |t| {
                     if (t == .array) {
-                        var tag_list: std.ArrayList([]const u8) = .{ .items = &[_][]const u8{}, .capacity = 0 };
+                        var tag_list: std.ArrayList([]const u8) = .empty;
                         try tag_list.ensureTotalCapacity(self.allocator, t.array.items.len);
                         for (t.array.items) |tv| {
                             if (tv == .string) try tag_list.append(self.allocator, tv.string);
@@ -195,7 +195,7 @@ try outputs_list.ensureTotalCapacity(self.allocator, outputs_arr.len);
         var labels_list: ?[]const []const u8 = null;
         if (args_obj.get("labels")) |labels_val| {
             if (labels_val == .array) {
-                var labels_arr: std.ArrayList([]const u8) = .{ .items = &[_][]const u8{}, .capacity = 0 };
+                var labels_arr: std.ArrayList([]const u8) = .empty;
 try labels_arr.ensureTotalCapacity(self.allocator, 8);
                 defer labels_arr.deinit(self.allocator);
                 for (labels_val.array.items) |label_val| {
@@ -344,7 +344,7 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
         };
 
         // Parse spends
-        var spends_list: std.ArrayList(signer_types.SignActionSpend) = .{ .items = &[_]signer_types.SignActionSpend{}, .capacity = 0 };
+        var spends_list: std.ArrayList(signer_types.SignActionSpend) = .empty;
         defer spends_list.deinit(self.allocator);
 
         if (args_obj.get("spends")) |spends_val| {
@@ -497,7 +497,7 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
             else => return error.InvalidJsonArgs,
         };
 
-        var query_buf: std.ArrayList(u8) = .{ .items = &[_]u8{}, .capacity = 0 };
+        var query_buf: std.ArrayList(u8) = .empty;
         try query_buf.ensureTotalCapacity(self.allocator, 256);
         defer query_buf.deinit(self.allocator);
 
@@ -570,7 +570,7 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
             if (o == .integer) offset = @intCast(o.integer);
         }
 
-        var query_buf: std.ArrayList(u8) = .{ .items = &[_]u8{}, .capacity = 0 };
+        var query_buf: std.ArrayList(u8) = .empty;
         try query_buf.ensureTotalCapacity(self.allocator, 256);
         defer query_buf.deinit(self.allocator);
 
@@ -618,7 +618,7 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
 
     fn getTransactionLabels(self: *SqliteStorageClient, tx_id: u32) ![]const []const u8 {
         const LabelRow = struct { name: []const u8 };
-        var labels_list: std.ArrayList([]const u8) = .{ .items = &[_][]const u8{}, .capacity = 0 };
+        var labels_list: std.ArrayList([]const u8) = .empty;
         try labels_list.ensureTotalCapacity(self.allocator, 8);
         defer labels_list.deinit(self.allocator);
 
