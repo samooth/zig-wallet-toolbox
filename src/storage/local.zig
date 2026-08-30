@@ -153,6 +153,13 @@ pub const LocalStorageClient = struct {
         return .{ .object = obj };
     }
 
+    /// relinquishOutput: the in-memory model tracks outputs only as opaque
+    /// JSON blobs per identity (no outpoint index), so there is nothing to
+    /// remove. Returns 0 (nothing relinquished).
+    pub fn relinquishOutput(_: *LocalStorageClient, _: std.mem.Allocator, _: types.AuthId, _: []const u8, _: []const u8, _: u32) !u64 {
+        return 0;
+    }
+
     pub fn storeKeyShares(self: *LocalStorageClient, _: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) !void {
         const owned = try types.serializeShares(self.allocator, shares);
         if (self.key_shares.get(auth.identity_key)) |prev| self.allocator.free(prev);

@@ -172,6 +172,34 @@ pub const Wallet = struct {
         return self.storage_manager.listActions(self.allocator, self.authId(), args_json);
     }
 
+    /// List actions restricted to status 'failed' (TS SDK semantics:
+    /// listActions with the reserved spec-op label appended; storage
+    /// interprets the label and filters the status).
+    /// With `unfail = true`, the matched 'failed' actions are moved to
+    /// status 'unfail', queueing them for recovery by the Monitor.
+    pub fn listFailedActions(self: *Wallet, args: ListActionsArgs, unfail: bool) !std.json.Value {
+        const base_labels: []const []const u8 = args.labels orelse &[_][]const u8{};
+        const labels = try self.allocator.alloc([]const u8, base_labels.len + 1 + @intFromBool(unfail));
+        defer self.allocator.free(labels);
+        @memcpy(labels[0..base_labels.len], base_labels);
+        labels[base_labels.len] = storage.types.spec_op_failed_actions;
+        if (unfail) labels[base_labels.len + 1] = storage.types.spec_op_failed_actions_unfail;
+
+        const args_json = try (ListActionsArgs{
+            .labels = labels,
+            .limit = args.limit,
+            .offset = args.offset,
+        }).toJson(self.allocator);
+        return self.storage_manager.listActions(self.allocator, self.authId(), args_json);
+    }
+
+    /// Relinquish an output from a basket: stop tracking it without spending.
+    /// `txid` is the display-order hex txid; returns how many outputs were
+    /// relinquished (0 or 1).
+    pub fn relinquishOutput(self: *Wallet, basket: []const u8, txid: []const u8, vout: u32) !u64 {
+        return self.storage_manager.relinquishOutput(self.allocator, self.authId(), basket, txid, vout);
+    }
+
     /// Get the wallet's balance by summing spendable outputs from the default basket.
     /// Returns confirmed and unconfirmed totals (unconfirmed is 0 for now).
     pub fn getBalance(self: *Wallet) !BalanceResult {

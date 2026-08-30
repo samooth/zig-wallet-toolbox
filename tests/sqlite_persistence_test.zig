@@ -509,3 +509,204 @@ test "SqliteStorageClient internalizeAction records outputs and known_tx" {
 
     try deleteTestDb(test_db_path);
 }
+
+test "listFailedActions spec-op: failed filtering + unfail transition" {
+    const allocator = std.heap.page_allocator;
+    const test_db_path = "/tmp/zig_wallet_test_failed_actions.db";
+
+    try deleteTestDb(test_db_path);
+
+    var storage_client = try SqliteStorageClient.init(allocator, .{
+        .path = test_db_path,
+        .journal_mode = "WAL",
+        .busy_timeout_ms = 5000,
+    });
+    defer storage_client.deinit();
+
+    const private_key = try ec.PrivateKey.generate();
+    var pubkey = try private_key.publicKey();
+    const compressed = pubkey.toCompressedSec1();
+    var identity_hex: [66]u8 = undefined;
+    _ = try bsvz.primitives.hex.encodeLower(&compressed, &identity_hex);
+
+    var storage_mgr = WalletStorageManager.init(allocator);
+    storage_mgr.setActive(storage_client.storageProvider());
+
+    var wallet = try Wallet.init(allocator, .{
+        .private_key = private_key,
+        .chain = .main,
+        .wallet_services = undefined,
+        .storage_manager = storage_mgr,
+    });
+    defer wallet.deinit();
+
+    const auth = wtb.storage.types.AuthId{ .identity_key = &identity_hex };
+
+    // Create two actions, then mark both 'failed' via SQL (as a monitor would).
+    const create_args = signer_types.CreateActionArgs{
+        .description = "will fail",
+        .outputs = &.{
+            signer_types.ActionOutput{
+                .locking_script = "76a91489abcdefabbaabbaabbaabbaabbaabba88ac",
+                .satoshis = 1000,
+            },
+        },
+    };
+    _ = try wallet.createAction(create_args);
+    _ = try wallet.createAction(create_args);
+
+    const failed_count = (try storage_client.db.one(
+        u32,
+        "UPDATE transactions SET status = 'failed' WHERE is_outgoing = 1 RETURNING 1",
+        .{},
+        .{},
+    )) orelse 0;
+    _ = failed_count;
+
+    // Plain listActions must NOT include 'failed' rows (TS status filter set).
+    {
+        var args_obj = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
+        const plain = try storage_client.listActions(allocator, auth, .{ .object = args_obj });
+        const actions = plain.object.get("actions").?.array.items;
+        try testing.expectEqual(@as(usize, 0), actions.len);
+        args_obj.deinit(allocator);
+    }
+
+    // listFailedActions: both failed rows visible.
+    var failed_result = try wallet.listFailedActions(.{}, false);
+    {
+        const actions = failed_result.object.get("actions").?.array.items;
+        try testing.expectEqual(@as(usize, 2), actions.len);
+        for (actions) |a| {
+            try testing.expectEqualStrings("failed", a.object.get("status").?.string);
+        }
+    }
+
+    // Status in DB must still be 'failed' (no unfail requested).
+    {
+        const still_failed = (try storage_client.db.one(
+            u32,
+            "SELECT COUNT(*) FROM transactions WHERE status = 'failed'",
+            .{},
+            .{},
+        )).?;
+        try testing.expectEqual(@as(u32, 2), still_failed);
+    }
+
+    // listFailedActions with unfail=true: rows reported as 'failed' on the wire,
+    // persisted status transitions to 'unfail'.
+    failed_result = try wallet.listFailedActions(.{}, true);
+    {
+        const actions = failed_result.object.get("actions").?.array.items;
+        try testing.expectEqual(@as(usize, 2), actions.len);
+        for (actions) |a| {
+            try testing.expectEqualStrings("failed", a.object.get("status").?.string);
+        }
+        const unfail_count = (try storage_client.db.one(
+            u32,
+            "SELECT COUNT(*) FROM transactions WHERE status = 'unfail'",
+            .{},
+            .{},
+        )).?;
+        try testing.expectEqual(@as(u32, 2), unfail_count);
+        const still_failed = (try storage_client.db.one(
+            u32,
+            "SELECT COUNT(*) FROM transactions WHERE status = 'failed'",
+            .{},
+            .{},
+        )).?;
+        try testing.expectEqual(@as(u32, 0), still_failed);
+    }
+
+    try deleteTestDb(test_db_path);
+}
+
+test "relinquishOutput clears the output basket" {
+    const allocator = std.heap.page_allocator;
+    const test_db_path = "/tmp/zig_wallet_test_relinquish.db";
+
+    try deleteTestDb(test_db_path);
+
+    var storage_client = try SqliteStorageClient.init(allocator, .{
+        .path = test_db_path,
+        .journal_mode = "WAL",
+        .busy_timeout_ms = 5000,
+    });
+    defer storage_client.deinit();
+
+    const private_key = try ec.PrivateKey.generate();
+    var pubkey = try private_key.publicKey();
+    const compressed = pubkey.toCompressedSec1();
+    var identity_hex: [66]u8 = undefined;
+    _ = try bsvz.primitives.hex.encodeLower(&compressed, &identity_hex);
+
+    var storage_mgr = WalletStorageManager.init(allocator);
+    storage_mgr.setActive(storage_client.storageProvider());
+
+    var wallet = try Wallet.init(allocator, .{
+        .private_key = private_key,
+        .chain = .main,
+        .wallet_services = undefined,
+        .storage_manager = storage_mgr,
+    });
+    defer wallet.deinit();
+
+    // Internalize a 1-in/2-out tx so real outputs exist in the 'default' basket.
+    const dummy_input = bsvz.transaction.Input.empty();
+    const dummy_script = bsvz.script.Script.init(&[_]u8{0x00});
+    var tx = bsvz.transaction.Transaction{
+        .version = 1,
+        .inputs = &[_]bsvz.transaction.Input{dummy_input},
+        .outputs = &[_]bsvz.transaction.Output{
+            .{ .satoshis = 1000, .locking_script = dummy_script },
+            .{ .satoshis = 2000, .locking_script = dummy_script },
+        },
+        .lock_time = 0,
+    };
+    const beef_bytes = try bsvz.transaction.beef.atomicBeefFromTransaction(allocator, &tx);
+    defer allocator.free(beef_bytes);
+    const beef_hex_buf = try allocator.alloc(u8, beef_bytes.len * 2);
+    defer allocator.free(beef_hex_buf);
+    const beef_hex = try bsvz.primitives.hex.encodeLower(beef_bytes, beef_hex_buf);
+
+    var args_obj = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
+    try args_obj.put(allocator, "tx", .{ .string = beef_hex });
+    const auth = wtb.storage.types.AuthId{ .identity_key = &identity_hex };
+    const result = try storage_client.internalizeAction(allocator, auth, .{ .object = args_obj });
+    // NOTE: mixed-ownership result (literal keys + one duped heap string):
+    // free the only heap allocation (the txid) — freeResult is meant for
+    // deep-copied (Remote) results.
+    const txid = result.object.get("txid").?.string;
+    defer allocator.free(@constCast(txid));
+
+    // Relinquish output 0 from the default basket.
+    const relinquished = try wallet.relinquishOutput("default", txid, 0);
+    try testing.expectEqual(@as(u64, 1), relinquished);
+
+    // vout 0 has no basket; vout 1 is untouched.
+    const basket0 = (try storage_client.db.one(
+        u32,
+        "SELECT COUNT(*) FROM outputs WHERE vout = 0 AND basket_name IS NULL",
+        .{},
+        .{},
+    )).?;
+    try testing.expectEqual(@as(u32, 1), basket0);
+
+    const basket1 = (try storage_client.db.one(
+        u32,
+        "SELECT COUNT(*) FROM outputs WHERE vout = 1 AND basket_name = 'default'",
+        .{},
+        .{},
+    )).?;
+    try testing.expectEqual(@as(u32, 1), basket1);
+
+    // Relinquishing the same output again matches nothing (idempotent).
+    const relinquished2 = try wallet.relinquishOutput("default", txid, 0);
+    try testing.expectEqual(@as(u64, 0), relinquished2);
+
+    // Unknown txid relinquishes nothing.
+    const relinquished3 = try wallet.relinquishOutput("default", "0000000000000000000000000000000000000000000000000000000000000000", 0);
+    try testing.expectEqual(@as(u64, 0), relinquished3);
+
+    try deleteTestDb(test_db_path);
+}

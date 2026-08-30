@@ -62,6 +62,25 @@ pub const TransactionStatus = enum {
     failed,
     nosend,
     nonfinal,
+    /// Terminal-override status: assigned by `listFailedActions(unfail=true)`
+    /// to queue a 'failed' action for attempted recovery by the Monitor.
+    unfail,
+};
+
+/// `listActions` special-operation label: restricts results to status
+/// 'failed' actions. Value matches the TS/Go SDK reserved constant exactly
+/// so remote storage servers interpret it identically.
+pub const spec_op_failed_actions = "97d4eb1e49215e3374cc2c1939a7c43a55e95c7427bf2d45ed63e3b4e0c88153";
+
+/// `listActions` special-operation label for use together with
+/// `spec_op_failed_actions`: moves matched 'failed' actions to 'unfail'
+/// status, queueing them for Monitor recovery.
+pub const spec_op_failed_actions_unfail = "unfail";
+
+/// Statuses returned by plain (non-spec-op) `listActions` — matches the
+/// TS/Go SDK filter set ('failed' is only visible via listFailedActions).
+pub const list_actions_statuses = [_][]const u8{
+    "completed", "unprocessed", "sending", "unproven", "unsigned", "nosend", "nonfinal",
 };
 
 pub const FindOrInsertUserResult = struct {

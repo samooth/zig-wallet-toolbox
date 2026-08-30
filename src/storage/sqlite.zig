@@ -571,11 +571,49 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
             if (o == .integer) offset = @intCast(o.integer);
         }
 
+        // -- Spec-op detection (reserved label constants, wire-compatible with
+        //    the TS/Go SDKs): spec_op_failed_actions restricts the query to
+        //    status 'failed'; the 'unfail' companion label moves the matched
+        //    rows to status 'unfail' for Monitor recovery. Any other labels
+        //    still apply as ordinary label filters.
+        var is_failed_spec_op = false;
+        var do_unfail = false;
+        var has_ordinary_labels = false;
+        if (args_obj.get("labels")) |labels_val| {
+            if (labels_val == .array) {
+                for (labels_val.array.items) |label| {
+                    if (label != .string) continue;
+                    if (std.mem.eql(u8, label.string, types.spec_op_failed_actions)) {
+                        is_failed_spec_op = true;
+                    } else if (is_failed_spec_op and std.mem.eql(u8, label.string, types.spec_op_failed_actions_unfail)) {
+                        do_unfail = true;
+                    } else {
+                        has_ordinary_labels = true;
+                    }
+                }
+            }
+        }
+
+        const statuses: []const []const u8 = if (is_failed_spec_op)
+            &[_][]const u8{"failed"}
+        else
+            &types.list_actions_statuses;
+
+        // Status values come from a fixed constant set (no user input), so
+        // inlining them as SQL literals is safe and keeps user_id/limit/offset
+        // as named bind parameters.
         var query_buf: std.ArrayList(u8) = .empty;
-        try query_buf.ensureTotalCapacity(self.allocator, 256);
+        try query_buf.ensureTotalCapacity(self.allocator, 320);
         defer query_buf.deinit(self.allocator);
 
-        try query_buf.appendSlice(self.allocator, "SELECT id, user_id, status, reference, is_outgoing, satoshis, description, version, lock_time, txid, input_beef, created_at, updated_at FROM transactions WHERE user_id = :user_id ORDER BY created_at DESC LIMIT COALESCE(:limit, 1000) OFFSET COALESCE(:offset, 0)");
+        try query_buf.appendSlice(self.allocator, "SELECT id, user_id, status, reference, is_outgoing, satoshis, description, version, lock_time, txid, input_beef, created_at, updated_at FROM transactions WHERE user_id = :user_id AND status IN (");
+        for (statuses, 0..) |s, i| {
+            if (i > 0) try query_buf.append(self.allocator, ',');
+            try query_buf.append(self.allocator, '\'');
+            try query_buf.appendSlice(self.allocator, s);
+            try query_buf.append(self.allocator, '\'');
+        }
+        try query_buf.appendSlice(self.allocator, ") ORDER BY created_at DESC LIMIT COALESCE(:limit, 1000) OFFSET COALESCE(:offset, 0)");
 
         var actions_array = json.Array.init(allocator);
 
@@ -583,23 +621,43 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
         defer stmt.deinit();
         var iter = try stmt.iteratorAlloc(TransactionRow, allocator, .{ .user_id = user_id_param, .limit = limit, .offset = offset });
         while (try iter.nextAlloc(allocator, .{})) |row| {
-            // Filter by labels if needed
-            if (args_obj.get("labels")) |labels_val| {
-                if (labels_val == .array) {
-                    const tx_labels = try self.getTransactionLabels(row.id);
-                    var has_label = false;
-                    for (labels_val.array.items) |label| {
-                        if (label != .string) continue;
-                        for (tx_labels) |tl| {
-                            if (std.mem.eql(u8, label.string, tl)) {
-                                has_label = true;
-                                break;
-                            }
+            // Filter by ordinary labels if needed (spec-op labels excluded)
+            if (has_ordinary_labels) {
+                if (args_obj.get("labels")) |labels_val| {
+                    if (labels_val == .array) {
+                        const tx_labels = try self.getTransactionLabels(row.id);
+                        defer {
+                            for (tx_labels) |tl| allocator.free(tl);
+                            allocator.free(tx_labels);
                         }
-                        if (has_label) break;
+                        var has_label = false;
+                        for (labels_val.array.items) |label| {
+                            if (label != .string) continue;
+                            // Skip reserved spec-op labels
+                            if (std.mem.eql(u8, label.string, types.spec_op_failed_actions)) continue;
+                            if (std.mem.eql(u8, label.string, types.spec_op_failed_actions_unfail)) continue;
+                            for (tx_labels) |tl| {
+                                if (std.mem.eql(u8, label.string, tl)) {
+                                    has_label = true;
+                                    break;
+                                }
+                            }
+                            if (has_label) break;
+                        }
+                        if (!has_label) continue;
                     }
-                    if (!has_label) continue;
                 }
+            }
+
+            // Spec-op post-processing: queue matched failed actions for
+            // recovery ('unfail' status). The wire protocol has no 'unfail'
+            // status, so the returned rows still report 'failed'.
+            if (do_unfail and std.mem.eql(u8, row.status, "failed")) {
+                try self.db.exec(
+                    "UPDATE transactions SET status = 'unfail', updated_at = strftime('%s','now') WHERE id = ?",
+                    .{},
+                    .{ .id = row.id },
+                );
             }
 
             var obj = try json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]json.Value{});
@@ -806,6 +864,27 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
         try obj.put(allocator, "accepted", .{ .bool = true });
         try obj.put(allocator, "txid", .{ .string = try allocator.dupe(u8, target_txid.toHex(&txid_buf)) });
         return .{ .object = obj };
+    }
+
+    /// Remove an output from its basket, keeping it spendable/unspent —
+    /// the wallet stops tracking it. Mirrors the TS SDK relinquishOutput:
+    /// locate the output by (txid, vout), clear `basket_name`.
+    /// Returns the number of rows updated (0 when the outpoint is unknown).
+    pub fn relinquishOutput(self: *SqliteStorageClient, _: std.mem.Allocator, auth: types.AuthId, basket: []const u8, txid: []const u8, vout: u32) !u64 {
+        _ = try self.ensureUser(auth.identity_key);
+
+        // FK note: outputs.basket_name references output_baskets(user_id, name),
+        // so we cannot just NULL it while the composite FK is enforced...
+        // Actually basket_name is nullable and the FK allows NULL (matching
+        // rows only), so clearing to NULL is valid.
+        const result = self.db.execDynamic(
+            "UPDATE outputs SET basket_name = NULL, updated_at = strftime('%s','now') WHERE user_id IN (SELECT user_id FROM users WHERE identity_key = ?) AND basket_name = ? AND transaction_id IN (SELECT id FROM transactions WHERE txid = ?) AND vout = ?",
+            .{},
+            .{ auth.identity_key, basket, txid, vout },
+        );
+
+        _ = result catch |err| return err;
+        return self.db.rowsAffected();
     }
 
     pub fn storeKeyShares(self: *SqliteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) !void {

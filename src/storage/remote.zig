@@ -169,6 +169,27 @@ pub const RemoteStorageClient = struct {
         return self.rpcCall(allocator, "internalizeAction", params);
     }
 
+    /// relinquishOutput is a WalletStorageWriter RPC method in the TS/Go SDKs;
+    /// the server returns the number of affected outputs.
+    pub fn relinquishOutput(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, basket: []const u8, txid: []const u8, vout: u32) anyerror!u64 {
+        var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
+        defer params.array.deinit();
+        try params.array.append(try self.buildAuthJson(auth));
+
+        var args = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
+        try args.put(self.allocator, "basket", .{ .string = basket });
+        const output = try std.fmt.allocPrint(self.allocator, "{s}.{d}", .{ txid, vout });
+        defer self.allocator.free(output);
+        try args.put(self.allocator, "output", .{ .string = output });
+        try params.array.append(.{ .object = args });
+
+        const result = try self.rpcCall(allocator, "relinquishOutput", params);
+        return switch (result) {
+            .integer => |i| @intCast(i),
+            else => 0,
+        };
+    }
+
     pub fn storeKeyShares(self: *RemoteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, shares: []const []const u8) anyerror!void {
         var params = std.json.Value{ .array = std.json.Array.init(self.allocator) };
         defer params.array.deinit();
