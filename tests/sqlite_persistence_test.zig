@@ -453,6 +453,7 @@ test "SqliteStorageClient internalizeAction records outputs and known_tx" {
     try outputs_arr.append(.{ .object = out0 });
     var args_obj = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
     try args_obj.put(allocator, "tx", .{ .string = beef_hex });
+    try args_obj.put(allocator, "trustUnverified", .{ .bool = true }); // storage-recording test; verification covered separately
     try args_obj.put(allocator, "outputs", .{ .array = outputs_arr });
 
     const auth = wtb.storage.types.AuthId{ .identity_key = &identity_hex };
@@ -671,6 +672,7 @@ test "relinquishOutput clears the output basket" {
 
     var args_obj = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
     try args_obj.put(allocator, "tx", .{ .string = beef_hex });
+    try args_obj.put(allocator, "trustUnverified", .{ .bool = true }); // storage-recording test; verification covered separately
     const auth = wtb.storage.types.AuthId{ .identity_key = &identity_hex };
     const result = try storage_client.internalizeAction(allocator, auth, .{ .object = args_obj });
     // NOTE: mixed-ownership result (literal keys + one duped heap string):
@@ -707,6 +709,95 @@ test "relinquishOutput clears the output basket" {
     // Unknown txid relinquishes nothing.
     const relinquished3 = try wallet.relinquishOutput("default", "0000000000000000000000000000000000000000000000000000000000000000", 0);
     try testing.expectEqual(@as(u64, 0), relinquished3);
+
+    try deleteTestDb(test_db_path);
+}
+
+test "internalizeAction strict verification: fails closed without services, rejects corrupt BEEF" {
+    const allocator = std.heap.page_allocator;
+    const test_db_path = "/tmp/zig_wallet_test_internalize_verify.db";
+
+    try deleteTestDb(test_db_path);
+
+    var storage_client = try SqliteStorageClient.init(allocator, .{
+        .path = test_db_path,
+        .journal_mode = "WAL",
+        .busy_timeout_ms = 5000,
+    });
+    defer storage_client.deinit();
+
+    const private_key = try ec.PrivateKey.generate();
+    var pubkey = try private_key.publicKey();
+    const compressed = pubkey.toCompressedSec1();
+    var identity_hex: [66]u8 = undefined;
+    _ = try bsvz.primitives.hex.encodeLower(&compressed, &identity_hex);
+    const auth = wtb.storage.types.AuthId{ .identity_key = &identity_hex };
+
+    // Build a valid atomic BEEF (1-in/1-out).
+    const dummy_input = bsvz.transaction.Input.empty();
+    const dummy_script = bsvz.script.Script.init(&[_]u8{0x00});
+    var tx = bsvz.transaction.Transaction{
+        .version = 1,
+        .inputs = &[_]bsvz.transaction.Input{dummy_input},
+        .outputs = &[_]bsvz.transaction.Output{
+            .{ .satoshis = 1000, .locking_script = dummy_script },
+        },
+        .lock_time = 0,
+    };
+    const beef_bytes = try bsvz.transaction.beef.atomicBeefFromTransaction(allocator, &tx);
+    defer allocator.free(beef_bytes);
+    const beef_hex_buf = try allocator.alloc(u8, beef_bytes.len * 2);
+    defer allocator.free(beef_hex_buf);
+    const beef_hex = try bsvz.primitives.hex.encodeLower(beef_bytes, beef_hex_buf);
+
+    // 1) Strict default, no services attached -> VerificationUnavailable,
+    //    nothing written to the DB.
+    {
+        var args_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+        defer args_obj.deinit(allocator);
+        try args_obj.put(allocator, "tx", .{ .string = beef_hex });
+        try testing.expectError(
+            error.VerificationUnavailable,
+            storage_client.internalizeAction(allocator, auth, .{ .object = args_obj }),
+        );
+        const rows = (try storage_client.db.one(u32, "SELECT COUNT(*) FROM known_txs", .{}, .{})).?;
+        try testing.expectEqual(@as(u32, 0), rows);
+    }
+
+    // 2) Strict default with services attached but unreachable -> bsvz's
+    //    beef.isValid rejects structurally-invalid transactions (our dummy
+    //    has an empty input script) before any chain lookups: InvalidBeef,
+    //    nothing written.
+    {
+        var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+        defer threaded.deinit();
+        var services = wtb.services.OneSatServices.init(allocator, .main, "http://127.0.0.1:1", threaded.io());
+        defer services.deinit();
+        storage_client.setServices(&services);
+
+        var args_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+        defer args_obj.deinit(allocator);
+        try args_obj.put(allocator, "tx", .{ .string = beef_hex });
+        try testing.expectError(
+            error.InvalidBeef,
+            storage_client.internalizeAction(allocator, auth, .{ .object = args_obj }),
+        );
+        const rows = (try storage_client.db.one(u32, "SELECT COUNT(*) FROM known_txs", .{}, .{})).?;
+        try testing.expectEqual(@as(u32, 0), rows);
+    }
+
+    // 3) Corrupt BEEF bytes with trustUnverified opt-out -> still rejected:
+    //    parsing fails before any verification or writes.
+    {
+        var args_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+        defer args_obj.deinit(allocator);
+        try args_obj.put(allocator, "tx", .{ .string = "deadbeef" });
+        try args_obj.put(allocator, "trustUnverified", .{ .bool = true });
+        try testing.expectError(
+            error.InvalidBeef,
+            storage_client.internalizeAction(allocator, auth, .{ .object = args_obj }),
+        );
+    }
 
     try deleteTestDb(test_db_path);
 }

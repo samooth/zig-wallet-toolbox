@@ -30,13 +30,13 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 - [x] Entity model (users, transactions, outputs, output baskets, labels, tags, known_txs, tx_notes, commissions, certificates, key_value) — schema + idempotent migrations
 - [ ] CRUD query builder with typed conditions, filters, pagination
 - [ ] Storage server (HTTP server hosting wallet storage for remote clients)
-- [ ] BEEF verification in storage layer (internalizeAction parses and persists BEEF; full verification pending)
-- [ ] Script verification in storage layer
+- [x] BEEF verification in storage layer (internalizeAction: `spv.verifyBeef` ancestor walk + chain-tracked merkle roots via `ChaintracksChainTracker`; strict by default, per-call `trustUnverified` opt-out; fails closed without services)
+- [x] Script verification in storage layer (`spv.verifyScripts` on the internalized tx inputs; result reported as `scriptsVerified`)
 
 ## Monitor
 
 - [x] Background monitor (`monitor.Monitor` + `monitor.Daemon` loop) with Go-parity tasks:
-  - [x] checkForProofs (merkle proof lookup -> completed + proof/height recorded)
+  - [x] checkForProofs (chain-verified merkle proof -> completed + proof/height recorded)
   - [x] sendWaiting (broadcast aged unprocessed txs, per-tx attempt cap)
   - [x] failAbandoned (stale unprocessed -> failed)
   - [x] unfailChecker ('unfail' recheck: mined -> completed, known -> unprocessed, unknown -> failed)

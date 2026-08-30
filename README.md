@@ -239,7 +239,7 @@ The share format is `bsvz.primitives.keyshares` (base58-encoded points + thresho
 | `storage.WalletStorageProvider` | Vtable interface for pluggable storage backends |
 | `storage.RemoteStorageClient` | JSON-RPC client for remote wallet storage servers |
 | `storage.LocalStorageClient` | In-memory local wallet storage (HashMap-backed; TEST/EPHEMERAL USE ONLY — all data lost on deinit/exit) |
-| `storage.SqliteStorageClient` | File-backed SQLite local storage (WAL mode, concurrent + crash-recovery capable; `internalizeAction` parses BEEF, records outputs, marks spent inputs, upserts known_txs) |
+| `storage.SqliteStorageClient` | File-backed SQLite local storage (WAL mode, concurrent + crash-recovery capable; `internalizeAction` parses BEEF, verifies it — ancestor walk, chain-tracked merkle roots, script checks — then records outputs, marks spent inputs, upserts known_txs; strict by default, `trustUnverified` opt-out) |
 | `keymanagement.PrivilegedKeyManager` | Derives a BRC-42 privileged key, splits it into Shamir shares (threshold reconstruction), and persists/recovers them via the active storage provider |
 | `keymanagement.PrivilegedKeyManager.encrypt` / `.decrypt` | Wallet-level AES-GCM encrypt/decrypt of arbitrary data under the privileged key (also on `Wallet.encrypt` / `Wallet.decrypt`) |
 | `keymanagement.splitShares` / `keymanagement.reconstructSecret` | Low-level Shamir split/reconstruct helpers over `bsvz.primitives.keyshares` |

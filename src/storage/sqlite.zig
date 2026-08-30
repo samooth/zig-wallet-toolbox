@@ -8,6 +8,8 @@ const util = @import("../util.zig");
 const signer_types = @import("../signer/types.zig");
 const json = std.json;
 const sqlite_types = @import("sqlite_types.zig");
+const chain_tracker = @import("chain_tracker.zig");
+const onesat_mod = @import("../services/onesat.zig");
 
 /// SQLite-backed wallet storage provider.
 /// Implements the WalletStorageProvider interface for persistent local storage.
@@ -17,8 +19,24 @@ pub const SqliteStorageClient = struct {
     db_path: []u8,
     user_id: ?u32 = null,
     identity_key: []u8,
+    /// Optional network services for BEEF/proof verification during
+    /// internalizeAction. When null and verification is requested, the
+    /// internalize fails closed (cannot verify against the chain).
+    services: ?*anyopaque = null,
+    /// When true, internalizeAction skips BEEF verification entirely
+    /// (offline/internal use). Verification is STRICT by default: a BEEF
+    /// that fails verification (or cannot be verified without services)
+    /// is rejected unless the request explicitly opts out via
+    /// `trustUnverified: true` in the internalize args.
+    trust_unverified_default: bool = false,
 
     pub const Config = schema.Config;
+
+    /// Attach network services for chain-backed BEEF verification.
+    /// `svc` must be a `*services.OneSatServices`.
+    pub fn setServices(self: *SqliteStorageClient, svc: *anyopaque) void {
+        self.services = svc;
+    }
 
 pub fn init(allocator: std.mem.Allocator, config: Config) !SqliteStorageClient {
         // Convert path to sentinel-terminated for zig-sqlite (dupeSentinel returns [:0]const u8)
@@ -765,6 +783,43 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
             break :blk &[_]std.json.Value{};
         };
 
+        // -- Step 4b: verify the BEEF (STRICT by default) --
+        // Walks the ancestor graph, checks structural validity, verifies every
+        // merkle proof against the chain (via the attached services, when
+        // present), and verifies scripts of inputs whose source outputs are
+        // in the BEEF. Rejections:
+        //   - structural/ancestor failure  -> error.InvalidBeef
+        //   - proof/root mismatch           -> error.VerificationFailed
+        //   - script failure                -> error.VerificationFailed
+        //   - services needed but missing/unreachable -> error.VerificationUnavailable
+        // The request may opt out per-call with `trustUnverified: true`
+        // (or globally via `trust_unverified_default` on the client).
+        const trust_unverified = blk: {
+            if (args_obj.get("trustUnverified")) |tv| {
+                if (tv == .bool) break :blk tv.bool;
+            }
+            break :blk self.trust_unverified_default;
+        };
+
+        var scripts_verified = false;
+        if (!trust_unverified) {
+            const svc_ptr: ?*onesat_mod.OneSatServices = @ptrCast(@alignCast(self.services));
+            if (svc_ptr == null) return error.VerificationUnavailable;
+
+            const tracker = chain_tracker.ChaintracksChainTracker.init(self.allocator, svc_ptr.?);
+            const beef_ok = bsvz.spv.verifyBeef(self.allocator, &parsed.beef, target_txid, tracker, null) catch |err| switch (err) {
+                error.InvalidBeef, error.MissingTransaction => return error.InvalidBeef,
+                else => return error.VerificationFailed,
+            };
+            if (!beef_ok) return error.VerificationFailed;
+
+            // Script verification for the target tx's inputs whose source
+            // outputs are available in the BEEF (ancestors present).
+            const scripts_ok = bsvz.spv.verifyScripts(self.allocator, &target_tx) catch return error.VerificationFailed;
+            if (!scripts_ok) return error.VerificationFailed;
+            scripts_verified = true;
+        }
+
         // Begin transaction
         try self.db.exec("BEGIN", .{}, .{});
         errdefer self.db.exec("ROLLBACK", .{}, .{}) catch {};
@@ -862,6 +917,8 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
         // Return result
         var obj = try json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]json.Value{});
         try obj.put(allocator, "accepted", .{ .bool = true });
+        try obj.put(allocator, "verified", .{ .bool = !trust_unverified });
+        if (!trust_unverified) try obj.put(allocator, "scriptsVerified", .{ .bool = scripts_verified });
         try obj.put(allocator, "txid", .{ .string = try allocator.dupe(u8, target_txid.toHex(&txid_buf)) });
         return .{ .object = obj };
     }

@@ -100,26 +100,36 @@ pub const Monitor = struct {
     fn recoverProofForTx(self: *Monitor, tx_row_id: u32, txid: []const u8, result: *TaskResult) !void {
         const proof = self.services.getMerklePath(self.allocator, txid) catch return;
         if (proof.merkle_path) |mp| {
-            // Parse the BRC-10 merkle path for the block height.
-            var block_height: ?u32 = null;
+            // Parse the BRC-10 merkle path and VERIFY it against the chain
+            // (root must match the header at the claimed height). Only a
+            // verified proof moves the tx to 'completed'.
             if (bsvz.spv.MerklePath.parse(self.allocator, mp)) |path| {
                 var p = path;
                 defer p.deinit(self.allocator);
-                block_height = p.block_height;
-            } else |_| {}
 
-            try self.storage.db.exec(
-                "UPDATE known_txs SET merkle_path = ?, block_height = ?, updated_at = strftime('%s','now') WHERE txid = ?",
-                .{},
-                .{ .merkle_path = mp, .block_height = block_height, .txid = txid },
-            );
-            try self.storage.db.exec(
-                "UPDATE transactions SET status = 'completed', updated_at = strftime('%s','now') WHERE id = ?",
-                .{},
-                .{ .id = tx_row_id },
-            );
-            result.proofs_found += 1;
-            log.info("tx {s} mined (height {?d}) -> completed", .{ txid, block_height });
+                const txid_hash = bsvz.primitives.chainhash.Hash.fromHex(txid) catch return;
+                const tracker = @import("../storage/chain_tracker.zig").ChaintracksChainTracker.init(self.allocator, self.services);
+                const verified = p.verify(self.allocator, .{ .bytes = txid_hash.bytes }, tracker) catch false;
+                if (!verified) {
+                    log.warn("merkle path for {s} failed chain verification; leaving status unchanged", .{txid});
+                    return;
+                }
+
+                try self.storage.db.exec(
+                    "UPDATE known_txs SET merkle_path = ?, block_height = ?, updated_at = strftime('%s','now') WHERE txid = ?",
+                    .{},
+                    .{ .merkle_path = mp, .block_height = p.block_height, .txid = txid },
+                );
+                try self.storage.db.exec(
+                    "UPDATE transactions SET status = 'completed', updated_at = strftime('%s','now') WHERE id = ?",
+                    .{},
+                    .{ .id = tx_row_id },
+                );
+                result.proofs_found += 1;
+                log.info("tx {s} mined (height {d}, verified) -> completed", .{ txid, p.block_height });
+            } else |_| {
+                log.warn("proof for {s} is not a parseable BRC-10 merkle path", .{txid});
+            }
         }
     }
 
