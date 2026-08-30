@@ -1,4 +1,5 @@
 const std = @import("std");
+const bsvz = @import("bsvz");
 const sqlite = @import("sqlite");
 const WalletStorageProvider = @import("interface.zig").WalletStorageProvider;
 const types = @import("types.zig");
@@ -633,10 +634,177 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
         return try labels_list.toOwnedSlice(self.allocator);
     }
 
-    pub fn internalizeAction(self: *SqliteStorageClient, _: std.mem.Allocator, _: types.AuthId, _: std.json.Value) !std.json.Value {
-        // For now, just return success
-        var obj = try json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]json.Value{});
-        try obj.put(self.allocator, "status", .{ .string = "internalized" });
+    pub fn internalizeAction(self: *SqliteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId, args: std.json.Value) !std.json.Value {
+        const user_id = try self.ensureUser(auth.identity_key);
+
+        const args_obj = switch (args) {
+            .object => |obj| obj,
+            else => return error.InvalidJsonArgs,
+        };
+
+        // -- Step 1: parse the BEEF (atomic or V1/V2) --
+        const tx_hex = blk: {
+            const tx_val = args_obj.get("tx") orelse return error.InvalidJsonArgs;
+            if (tx_val != .string) return error.InvalidJsonArgs;
+            break :blk tx_val.string;
+        };
+
+        const beef_bytes = try bsvz.primitives.hex.decode(self.allocator, tx_hex);
+        defer self.allocator.free(beef_bytes);
+        var parsed = bsvz.transaction.beef.parseBeef(self.allocator, beef_bytes) catch return error.InvalidBeef;
+        defer parsed.deinit();
+
+        // -- Step 2: resolve the target txid --
+        // For atomic BEEF the prefixed txid names the target. Otherwise the
+        // target is the single tx in the BEEF (V1) or the tx whose txid is not
+        // spent as an input by any other tx in the set (V2).
+        var target_txid: bsvz.primitives.chainhash.Hash = undefined;
+        if (parsed.txid) |tid| {
+            target_txid = tid;
+        } else {
+            // Find the tx that is not consumed as an input by another tx.
+            var it = parsed.beef.transactions.iterator();
+            var candidate: ?bsvz.primitives.chainhash.Hash = null;
+            var input_txids = std.AutoHashMap([32]u8, void).init(self.allocator);
+            defer input_txids.deinit();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.transaction) |tx| {
+                    for (tx.inputs) |input| {
+                        try input_txids.put(input.previous_outpoint.txid.bytes, {});
+                    }
+                }
+            }
+            var it2 = parsed.beef.transactions.iterator();
+            while (it2.next()) |entry| {
+                if (entry.value_ptr.transaction) |tx| {
+                    const tid = tx.txid(self.allocator) catch continue;
+                    if (!input_txids.contains(tid.bytes)) {
+                        if (candidate == null) {
+                            candidate = bsvz.primitives.chainhash.Hash{ .bytes = tid.bytes };
+                        } else {
+                            // More than one unconsumed tx: ambiguous without a
+                            // specific txid. Internalize the first one.
+                            break;
+                        }
+                    }
+                }
+            }
+            target_txid = candidate orelse return error.InvalidBeef;
+        }
+
+        const target_entry = parsed.beef.findTransaction(target_txid) orelse return error.InvalidBeef;
+        const target_tx = target_entry.*;
+
+        // -- Step 3: txid hex strings for SQL rows --
+        var txid_buf: [64]u8 = undefined;
+        _ = target_txid.toHex(&txid_buf);
+
+        // -- Step 4: parse per-output metadata (basket etc.) from args --
+        const outputs_meta = blk: {
+            if (args_obj.get("outputs")) |ov| {
+                if (ov == .array) break :blk ov.array.items;
+            }
+            break :blk &[_]std.json.Value{};
+        };
+
+        // Begin transaction
+        try self.db.exec("BEGIN", .{}, .{});
+        errdefer self.db.exec("ROLLBACK", .{}, .{}) catch {};
+
+        // -- Step 5a: insert a transactions row for the internalized tx so
+        // outputs can reference it (FK: outputs.transaction_id). Re-running is
+        // idempotent via ON CONFLICT on the txid unique constraint.
+        {
+            var ref_rand: [8]u8 = undefined;
+            util.randomBytes(&ref_rand);
+            const ref_rand_u64: u64 = @bitCast(ref_rand);
+            const reference = try std.fmt.allocPrint(self.allocator, "int_{d}{x}", .{ nowMillis(), ref_rand_u64 });
+            defer self.allocator.free(reference);
+
+            try self.db.exec(
+                "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, version, lock_time, txid, created_at, updated_at) VALUES (?, 'unprocessed', ?, 0, 0, 'internalized', 1, 0, ?, strftime('%s','now'), strftime('%s','now')) ON CONFLICT(txid) DO NOTHING",
+                .{},
+                .{ .user_id = user_id, .reference = reference, .txid = txid_buf[0..] },
+            );
+        }
+
+        const tx_row_id: u32 = blk: {
+            const row = try self.db.one(u32, "SELECT id FROM transactions WHERE txid = ?", .{}, .{ .txid = txid_buf[0..] });
+            break :blk row orelse return error.InternalizeFailed;
+        };
+
+        // -- Step 5b: insert the target tx's outputs as user outputs --
+        for (target_tx.outputs, 0..) |output, out_idx| {
+            const basket = blk: {
+                if (out_idx < outputs_meta.len) {
+                    if (outputs_meta[out_idx] == .object) {
+                        if (outputs_meta[out_idx].object.get("basket")) |b| {
+                            if (b == .string) break :blk b.string;
+                        }
+                    }
+                }
+                break :blk "default";
+            };
+
+            // Ensure basket exists
+            try self.db.exec(
+                "INSERT OR IGNORE INTO output_baskets (user_id, name, created_at) VALUES (?, ?, strftime('%s','now'))",
+                .{},
+                .{ .user_id = user_id, .name = basket },
+            );
+
+            const script_hex = try self.allocator.alloc(u8, output.locking_script.bytes.len * 2);
+            defer self.allocator.free(script_hex);
+            _ = try bsvz.primitives.hex.encodeLower(output.locking_script.bytes, script_hex);
+
+            const vout: u32 = @intCast(out_idx);
+            const exists = try self.db.one(
+                u32,
+                "SELECT 1 FROM outputs WHERE user_id = ? AND transaction_id = ? AND vout = ?",
+                .{},
+                .{ .user_id = user_id, .transaction_id = tx_row_id, .vout = vout },
+            );
+            if (exists != null) continue;
+
+            try self.db.exec(
+                "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, locking_script, basket_name, spendable, change, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 'internalized', strftime('%s','now'), strftime('%s','now'))",
+                .{},
+                .{ user_id, tx_row_id, vout, output.satoshis, script_hex, basket },
+            );
+        }
+
+        // -- Step 6: mark outputs spent by the tx's inputs --
+        // OutPoint.txid bytes are in internal (little-endian) order; hex display
+        // order requires reversing first, mirroring chainhash.Hash.toHex.
+        var input_buf: [64]u8 = undefined;
+        for (target_tx.inputs) |input| {
+            var tmp = input.previous_outpoint.txid.bytes;
+            std.mem.reverse(u8, &tmp);
+            const encoded = std.fmt.bytesToHex(tmp, .lower);
+            @memcpy(&input_buf, &encoded);
+            try self.db.exec(
+                "UPDATE outputs SET spent_by = ?, spendable = 0, updated_at = strftime('%s','now') WHERE user_id = ? AND transaction_id IN (SELECT id FROM transactions WHERE txid = ?) AND vout = ?",
+                .{},
+                .{ .spent_by = tx_row_id, .user_id = user_id, .txid = input_buf[0..], .vout = input.previous_outpoint.index },
+            );
+        }
+
+        // -- Step 7: upsert known_txs with the beef bytes --
+        {
+            const known_txid_hex = target_txid.toHex(&txid_buf);
+            try self.db.exec(
+                "INSERT INTO known_txs (user_id, txid, status, beef, was_broadcast, created_at, updated_at) VALUES (?, ?, 'internalized', ?, 0, strftime('%s','now'), strftime('%s','now')) ON CONFLICT(user_id, txid) DO UPDATE SET status = 'internalized', beef = excluded.beef, updated_at = strftime('%s','now')",
+                .{},
+                .{ .user_id = user_id, .txid = known_txid_hex, .beef = beef_bytes },
+            );
+        }
+
+        try self.db.exec("COMMIT", .{}, .{});
+
+        // Return result
+        var obj = try json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]json.Value{});
+        try obj.put(allocator, "accepted", .{ .bool = true });
+        try obj.put(allocator, "txid", .{ .string = try allocator.dupe(u8, target_txid.toHex(&txid_buf)) });
         return .{ .object = obj };
     }
 
@@ -651,6 +819,13 @@ try labels_arr.ensureTotalCapacity(self.allocator, 8);
             .{},
             .{ .identity_key = auth.identity_key, .shares_json = shares_json },
         );
+    }
+
+    /// Free a JSON value previously returned by one of this client's methods
+    /// (e.g. internalizeAction results). Results own their memory in the
+    /// allocator passed to the producing call.
+    pub fn freeResult(_: *SqliteStorageClient, allocator: std.mem.Allocator, value: std.json.Value) void {
+        @import("local.zig").freeJsonValue(allocator, value);
     }
 
     pub fn loadKeyShares(self: *SqliteStorageClient, allocator: std.mem.Allocator, auth: types.AuthId) ![][]u8 {

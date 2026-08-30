@@ -404,3 +404,108 @@ test "SqliteStorageClient unclean shutdown recovery" {
 
     try deleteTestDb(test_db_path);
 }
+
+test "SqliteStorageClient internalizeAction records outputs and known_tx" {
+    const allocator = std.heap.page_allocator;
+    const test_db_path = "/tmp/zig_wallet_test_internalize.db";
+
+    try deleteTestDb(test_db_path);
+
+    var storage_client = try SqliteStorageClient.init(allocator, .{
+        .path = test_db_path,
+        .journal_mode = "WAL",
+        .busy_timeout_ms = 5000,
+    });
+    defer storage_client.deinit();
+
+    const private_key = try ec.PrivateKey.generate();
+    var pubkey = try private_key.publicKey();
+    const compressed = pubkey.toCompressedSec1();
+    var identity_hex: [66]u8 = undefined;
+    _ = try bsvz.primitives.hex.encodeLower(&compressed, &identity_hex);
+
+    // Build a simple 1-input / 2-output transaction via bsvz.
+    const dummy_input = bsvz.transaction.Input.empty();
+    const dummy_script = bsvz.script.Script.init(&[_]u8{0x00}); // minimal, contents irrelevant for storage
+    var tx = bsvz.transaction.Transaction{
+        .version = 1,
+        .inputs = &[_]bsvz.transaction.Input{dummy_input},
+        .outputs = &[_]bsvz.transaction.Output{
+            .{ .satoshis = 1000, .locking_script = dummy_script },
+            .{ .satoshis = 2000, .locking_script = dummy_script },
+        },
+        .lock_time = 0,
+    };
+    // NOTE: no tx.deinit here — inputs/outputs reference static literals,
+    // so the transaction owns no heap allocations.
+
+    // Wrap the tx in an atomic BEEF (txid-prefixed V2 beef).
+    const beef_bytes = try bsvz.transaction.beef.atomicBeefFromTransaction(allocator, &tx);
+    defer allocator.free(beef_bytes);
+    const beef_hex_buf = try allocator.alloc(u8, beef_bytes.len * 2);
+    defer allocator.free(beef_hex_buf);
+    const beef_hex = try bsvz.primitives.hex.encodeLower(beef_bytes, beef_hex_buf);
+
+    // Build internalizeAction args: { tx: <beef hex>, outputs: [{basket: ...}] }
+    var outputs_arr = std.json.Array.init(allocator);
+    var out0 = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
+    try out0.put(allocator, "basket", .{ .string = "default" });
+    try outputs_arr.append(.{ .object = out0 });
+    var args_obj = try std.json.ObjectMap.init(allocator, &[_][]const u8{}, &[_]std.json.Value{});
+    try args_obj.put(allocator, "tx", .{ .string = beef_hex });
+    try args_obj.put(allocator, "outputs", .{ .array = outputs_arr });
+
+    const auth = wtb.storage.types.AuthId{ .identity_key = &identity_hex };
+    const result = try storage_client.internalizeAction(allocator, auth, .{ .object = args_obj });
+    try testing.expect(result == .object);
+    try testing.expectEqual(true, result.object.get("accepted").?.bool);
+
+    // Verify outputs were recorded (2 outputs).
+    const out_rows = (try storage_client.db.one(
+        u32,
+        "SELECT COUNT(*) FROM outputs WHERE satoshis IN (1000, 2000)",
+        .{},
+        .{},
+    )).?;
+    try testing.expectEqual(@as(u32, 2), out_rows);
+
+    const basket_rows = (try storage_client.db.one(
+        u32,
+        "SELECT COUNT(*) FROM outputs WHERE basket_name = 'default' AND vout = 0 AND satoshis = 1000",
+        .{},
+        .{},
+    )).?;
+    try testing.expectEqual(@as(u32, 1), basket_rows);
+
+    const basket2_rows = (try storage_client.db.one(
+        u32,
+        "SELECT COUNT(*) FROM outputs WHERE vout = 1 AND satoshis = 2000",
+        .{},
+        .{},
+    )).?;
+    try testing.expectEqual(@as(u32, 1), basket2_rows);
+
+    // Verify known_txs was upserted with the beef and status 'internalized'.
+    const known_rows = (try storage_client.db.one(
+        u32,
+        "SELECT COUNT(*) FROM known_txs WHERE status = 'internalized' AND beef IS NOT NULL",
+        .{},
+        .{},
+    )).?;
+    try testing.expectEqual(@as(u32, 1), known_rows);
+
+    // Idempotency: internalizing the same BEEF twice must not error or
+    // duplicate rows (INSERT OR IGNORE / ON CONFLICT paths).
+    const result2 = try storage_client.internalizeAction(allocator, auth, .{ .object = args_obj });
+    try testing.expectEqual(true, result2.object.get("accepted").?.bool);
+
+    const out_rows2 = (try storage_client.db.one(
+        u32,
+        "SELECT COUNT(*) FROM outputs WHERE satoshis IN (1000, 2000)",
+        .{},
+        .{},
+    )).?;
+    try testing.expectEqual(@as(u32, 2), out_rows2);
+
+    try deleteTestDb(test_db_path);
+}
