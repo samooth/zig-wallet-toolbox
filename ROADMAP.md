@@ -21,7 +21,7 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 - [x] Signer types (`CreateActionArgs`, `SignActionArgs`, options)
 - [x] Signable data extraction and signed input construction
 - [x] HTTP client and JSON-RPC request/response handling
-- [x] E2e test against live `api.1sat.app` services (storage lifecycle via `WALLET_STORAGE_URL`)
+- [x] E2e test against live `api.1sat.app` services (soft network check; storage lifecycle runs locally by default, remote via `WALLET_STORAGE_URL`)
 
 ## Storage
 
@@ -30,7 +30,7 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 - [x] Entity model (users, transactions, outputs, output baskets, labels, tags, known_txs, tx_notes, commissions, certificates, key_value) — schema + idempotent migrations
 - [ ] CRUD query builder with typed conditions, filters, pagination
 - [ ] Storage server (HTTP server hosting wallet storage for remote clients)
-- [ ] BEEF verification in storage layer
+- [ ] BEEF verification in storage layer (internalizeAction parses and persists BEEF; full verification pending)
 - [ ] Script verification in storage layer
 
 ## Monitor
@@ -57,7 +57,7 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 
 ## Wallet API Completeness
 
-- [ ] `internalizeAction` (wired but untested)
+- [x] `internalizeAction` (BEEF parse, outputs recorded, inputs marked spent, known_txs upsert; SQLite backend; tests)
 - [ ] `listFailedActions`
 - [ ] `relinquishOutput`
 - [x] `getBalance` (sum spendable outputs)
@@ -86,6 +86,6 @@ Implementation progress toward parity with [go-wallet-toolbox](https://github.co
 - [ ] OpenTelemetry tracing
 - [ ] Structured logging beyond `std.log.scoped`
 - [ ] Permissions manager (per-app, per-protocol access control)
-- [~] Mock HTTP server created (src/test/mock_http.zig) — limited by Zig 0.16 I/O API; revisit on 0.17+
-- [ ] CI workflow (GitHub Actions)
+- [ ] Mock HTTP server for offline service tests (previous attempt was removed; rewrite against the Zig 0.16/0.17 `std.Io` API)
+- [x] CI workflow (GitHub Actions; Zig 0.16.0 + 0.17 master, both required)
 - [ ] Examples directory
