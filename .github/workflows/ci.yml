@@ -28,8 +28,7 @@ jobs:
         run: zig build test -Doptimize=ReleaseFast --summary all
 
   test-master:
-    name: Test (Zig master, soft)
-    continue-on-error: true
+    name: Test (Zig 0.17)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

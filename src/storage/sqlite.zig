@@ -20,8 +20,8 @@ pub const SqliteStorageClient = struct {
     pub const Config = schema.Config;
 
 pub fn init(allocator: std.mem.Allocator, config: Config) !SqliteStorageClient {
-        // Convert path to sentinel-terminated for zig-sqlite (dupeZ returns [:0]const u8)
-        const path_sentinel = try allocator.dupeZ(u8, config.path);
+        // Convert path to sentinel-terminated for zig-sqlite (dupeSentinel returns [:0]const u8)
+        const path_sentinel = try allocator.dupeSentinel(u8, config.path, 0);
         defer allocator.free(path_sentinel);
 
         var db = try sqlite.Db.init(.{

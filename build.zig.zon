@@ -9,8 +9,8 @@
             .hash = "bsvz-0.1.0-wvsL-fyNFQAWFhifuU4QuPB1vQ0YIVhBJTVTgitNt7wI",
         },
         .sqlite = .{
-            .url = "git+https://github.com/samooth/zig-sqlite#5ef50a006319c0718d9edfa37aedee3edff67678",
-            .hash = "sqlite-3.49.2-F2R_a56sDgDPwvJBHYAlb9tuqmqNBdE-fvrVp2ctFyBI",
+            .url = "git+https://github.com/samooth/zig-sqlite#2124d42d817c47da5f033b61a9fa6c7643f598c4",
+            .hash = "sqlite-3.53.4-F2R_a_9DDwBktiEd3EBGtbAqXJ8SwBLUJPhdydz0XcUG",
         },
     },
     .paths = .{
