@@ -24,7 +24,7 @@ The Zig Wallet Toolbox is a Zig-native implementation of the BRC-100 wallet inte
 | Module | Description |
 |--------|-------------|
 | **wallet** | Full BRC-100 wallet — action creation, signing, identity key derivation, output and action listing |
-| **storage** | Pluggable persistence with a `WalletStorageManager` supporting active and backup providers; ships with a `RemoteStorageClient` (JSON-RPC over authenticated HTTP), `LocalStorageClient` (in-memory for offline-first/offline use), and `SqliteStorageClient` (file-backed SQLite with WAL mode for persistent, concurrent, crash-recovery-capable storage) |
+| **storage** | Pluggable persistence with a `WalletStorageManager` supporting active and backup providers (non-owning — callers keep ownership of their clients); ships with a `RemoteStorageClient` (JSON-RPC over authenticated HTTP), `LocalStorageClient` (in-memory, test/ephemeral use only — data is lost on exit), and `SqliteStorageClient` (file-backed SQLite with WAL mode, real `internalizeAction`, concurrent + crash-recovery-capable storage) |
 | **services** | Network layer — `OneSatServices` integrates Chaintracks (headers), Arcade (broadcast), BEEF (merkle proofs and raw tx), and TXO (UTXO lookups) |
 | **auth** | BRC-103/104 mutual authentication — `AuthFetch` handles peer sessions, nonce exchange, request/response payload signing, and authenticated HTTP transport |
 | **signer** | Transaction building and signing — `CreateActionArgs`, `SignActionArgs`, signable data extraction, and signed input construction |
@@ -157,7 +157,7 @@ pub fn main() !void {
 }
 ```
 
-**Note**: Each `AuthFetch` and `LocalStorageClient` owns its own I/O runtime — no global state, fully thread-safe.
+**Note**: `AuthFetch` and `LocalStorageClient` are stateless per-instance and safe to use across threads behind your own synchronization; the `Io` runtime is created and owned by the caller.
 
 ### Option C: SQLite Storage (persistent, concurrent)
 
@@ -177,7 +177,9 @@ pub fn main() !void {
         .journal_mode = "WAL",
         .busy_timeout_ms = 5000,
     });
-    // storage_client owns the db connection; WalletStorageManager destroys it via wallet.deinit()
+    // The caller owns the storage client: WalletStorageManager only holds a
+    // provider reference and does NOT destroy it.
+    defer storage_client.deinit();
 
     var storage_mgr = wtb.storage.WalletStorageManager.init(allocator);
     storage_mgr.setActive(storage_client.storageProvider());
@@ -195,7 +197,7 @@ pub fn main() !void {
         .wallet_services = services.walletServices(),
         .storage_manager = storage_mgr,
     });
-    defer wallet.deinit(); // also closes the SQLite connection
+    defer wallet.deinit(); // deinits the wallet only; storage_client is deinited by its own defer above
 
     // Data persists across restarts — reopen the same .path to recover.
     const identity = wallet.getPublicKey();
@@ -236,8 +238,8 @@ The share format is `bsvz.primitives.keyshares` (base58-encoded points + thresho
 | `storage.WalletStorageManager` | Storage orchestrator with active provider and backup list |
 | `storage.WalletStorageProvider` | Vtable interface for pluggable storage backends |
 | `storage.RemoteStorageClient` | JSON-RPC client for remote wallet storage servers |
-| `storage.LocalStorageClient` | In-memory local wallet storage (HashMap-backed) |
-| `storage.SqliteStorageClient` | File-backed SQLite local storage (WAL mode, concurrent + crash-recovery capable) |
+| `storage.LocalStorageClient` | In-memory local wallet storage (HashMap-backed; TEST/EPHEMERAL USE ONLY — all data lost on deinit/exit) |
+| `storage.SqliteStorageClient` | File-backed SQLite local storage (WAL mode, concurrent + crash-recovery capable; `internalizeAction` parses BEEF, records outputs, marks spent inputs, upserts known_txs) |
 | `keymanagement.PrivilegedKeyManager` | Derives a BRC-42 privileged key, splits it into Shamir shares (threshold reconstruction), and persists/recovers them via the active storage provider |
 | `keymanagement.PrivilegedKeyManager.encrypt` / `.decrypt` | Wallet-level AES-GCM encrypt/decrypt of arbitrary data under the privileged key (also on `Wallet.encrypt` / `Wallet.decrypt`) |
 | `keymanagement.splitShares` / `keymanagement.reconstructSecret` | Low-level Shamir split/reconstruct helpers over `bsvz.primitives.keyshares` |
@@ -352,7 +354,7 @@ var response = try auth_fetch.postJson("https://api.example.com/action", body);
 defer response.deinit();
 ```
 
-**Note**: Each `AuthFetch` owns its own I/O runtime — no global state, fully thread-safe.
+**Note**: The `Io` runtime is created and owned by the caller; `AuthFetch` holds no global state.
 
 ### Services
 
@@ -382,13 +384,13 @@ zig build --summary all
 # Header: include/bsvwallet.h
 ```
 
-The test suite includes unit tests embedded in source files and integration tests in `tests/`. The e2e test in `tests/e2e_test.zig` always exercises the public 1Sat service APIs (`api.1sat.app`); set `WALLET_STORAGE_URL` to also run the remote storage lifecycle against your own go-wallet-toolbox backend:
+The test suite includes unit tests embedded in source files and integration tests in `tests/`. The e2e test in `tests/e2e_test.zig` runs the full wallet storage lifecycle against the local in-memory `LocalStorageClient` by default, with a soft network check against the public 1Sat service APIs (`api.1sat.app` — skipped when unreachable, so CI stays deterministic). Set `WALLET_STORAGE_URL` to run the storage lifecycle against a remote BRC-100 (go-wallet-toolbox) backend instead:
 
 ```bash
-# Unit + service tests (storage lifecycle is skipped)
+# Unit + service tests (storage lifecycle runs locally, network is soft)
 zig build test
 
-# Full e2e including remote BRC-100 storage
+# Storage lifecycle against a remote BRC-100 backend
 WALLET_STORAGE_URL=https://your-backend.example.com zig build test
 
 # Run with logging to see e2e details
