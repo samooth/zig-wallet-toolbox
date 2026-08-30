@@ -7,7 +7,16 @@ const types = @import("types.zig");
 const util = @import("../util.zig");
 
 /// In-memory local wallet storage provider.
-/// Stores data in HashMaps for testing and offline use.
+///
+/// WARNING: TESTS / EPHEMERAL USE ONLY.
+/// All data lives in process memory (HashMaps) and is irrecoverably lost when
+/// the process exits, crashes, or the client is deinited. There is no
+/// persistence and no way to recover a stored wallet, key shares, or action
+/// history afterwards. For persistent storage use `SqliteStorageClient` (file
+/// backed) or `RemoteStorageClient` (BRC-100 server backed).
+///
+/// Intended for unit/integration tests, examples, and short-lived throwaway
+/// wallets where data loss is acceptable.
 pub const LocalStorageClient = struct {
     allocator: std.mem.Allocator,
     // In-memory storage
@@ -61,7 +70,7 @@ pub const LocalStorageClient = struct {
             return out;
         }
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("outputs", .{ .array = std.json.Array.init(self.allocator) });
+        try obj.put(self.allocator, "outputs", .{ .array = std.json.Array.init(self.allocator) });
         const data = OutputData{
             .identity_key = try self.allocator.dupe(u8, identity_key),
             .outputs = .{ .object = obj },
@@ -73,13 +82,13 @@ pub const LocalStorageClient = struct {
     fn getOrCreateActions(self: *LocalStorageClient, _: []const u8) !std.json.Value {
         // For simplicity, return empty actions array
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("actions", .{ .array = std.json.Array.init(self.allocator) });
+        try obj.put(self.allocator, "actions", .{ .array = std.json.Array.init(self.allocator) });
         return .{ .object = obj };
     }
 
     pub fn makeAvailable(self: *LocalStorageClient, _: std.mem.Allocator) !std.json.Value {
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("available", .{ .bool = true });
+        try obj.put(self.allocator, "available", .{ .bool = true });
         return .{ .object = obj };
     }
 
@@ -90,8 +99,8 @@ pub const LocalStorageClient = struct {
     pub fn findOrInsertUser(self: *LocalStorageClient, _: std.mem.Allocator, identity_key: []const u8) !std.json.Value {
         const user = try self.getOrCreateUser(identity_key);
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("user", .{ .string = identity_key });
-        try obj.put("isNew", .{ .bool = user.is_new });
+        try obj.put(self.allocator, "user", .{ .string = identity_key });
+        try obj.put(self.allocator, "isNew", .{ .bool = user.is_new });
         user.is_new = false;
         return .{ .object = obj };
     }
@@ -116,21 +125,21 @@ pub const LocalStorageClient = struct {
         try self.actions.put(try self.allocator.dupe(u8, reference), action);
 
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("referenceNumber", .{ .string = reference });
-        try obj.put("txid", .{ .string = std.fmt.allocPrint(self.allocator, "local_tx_{d}", .{util.nowMilli()}) catch "local_tx" });
+        try obj.put(self.allocator, "referenceNumber", .{ .string = reference });
+        try obj.put(self.allocator, "txid", .{ .string = std.fmt.allocPrint(self.allocator, "local_tx_{d}", .{util.nowMilli()}) catch "local_tx" });
         return .{ .object = obj };
     }
 
     pub fn processAction(self: *LocalStorageClient, _: std.mem.Allocator, _: types.AuthId, _: std.json.Value) !std.json.Value {
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("txid", .{ .string = "local_tx_processed" });
-        try obj.put("status", .{ .string = "success" });
+        try obj.put(self.allocator, "txid", .{ .string = "local_tx_processed" });
+        try obj.put(self.allocator, "status", .{ .string = "success" });
         return .{ .object = obj };
     }
 
     pub fn abortAction(self: *LocalStorageClient, _: std.mem.Allocator, _: types.AuthId, _: std.json.Value) !std.json.Value {
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("status", .{ .string = "aborted" });
+        try obj.put(self.allocator, "status", .{ .string = "aborted" });
         return .{ .object = obj };
     }
 
@@ -145,7 +154,7 @@ pub const LocalStorageClient = struct {
 
     pub fn internalizeAction(self: *LocalStorageClient, _: std.mem.Allocator, _: types.AuthId, _: std.json.Value) !std.json.Value {
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
-        try obj.put("status", .{ .string = "internalized" });
+        try obj.put(self.allocator, "status", .{ .string = "internalized" });
         return .{ .object = obj };
     }
 

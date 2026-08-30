@@ -103,6 +103,13 @@ pub fn splitShares(allocator: std.mem.Allocator, secret: [32]u8, total: usize, t
 
     var integrity: [8]u8 = undefined;
     util.randomBytes(&integrity);
+    // The bsvz backup format is dot-separated ("x.y.threshold.integrity") with the
+    // integrity serialized as raw bytes; a '.' (0x2E) byte would corrupt parsing in
+    // fromBackupFormat (split on '.' yields too many parts). Remap it to a safe byte
+    // (~3.1% of random 8-byte values would otherwise be unparseable).
+    for (&integrity) |*b| {
+        if (b.* == '.') b.* = '0';
+    }
 
     return keyshares.KeyShares{ .points = points, .threshold = threshold, .integrity = integrity };
 }

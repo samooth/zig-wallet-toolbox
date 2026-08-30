@@ -5,6 +5,7 @@ const bsvz = @import("bsvz");
 const PrivateKey = bsvz.primitives.ec.PrivateKey;
 const AuthFetch = wtb.auth.AuthFetch;
 const RemoteStorageClient = wtb.storage.RemoteStorageClient;
+const LocalStorageClient = wtb.storage.LocalStorageClient;
 const WalletStorageManager = wtb.storage.WalletStorageManager;
 const OneSatServices = wtb.services.OneSatServices;
 const Wallet = wtb.wallet.Wallet;
@@ -14,8 +15,9 @@ const host = "https://api.1sat.app";
 
 // Storage endpoints are NOT hosted on api.1sat.app — they belong to a
 // go-wallet-toolbox deployment. Set WALLET_STORAGE_URL (e.g.
-// "https://your-backend.example.com") to run the storage-dependent parts;
-// without it the test only exercises the public 1Sat service APIs.
+// "https://your-backend.example.com") to run the storage lifecycle against a
+// remote BRC-100 storage backend; without it the lifecycle runs fully locally
+// against the in-memory LocalStorageClient.
 const env_storage_url = "WALLET_STORAGE_URL";
 
 fn getStorageUrl(allocator: std.mem.Allocator) !?[]u8 {
@@ -47,9 +49,11 @@ fn getIo() std.Io {
 }
 
 // End-to-end test: generate a random key and exercise the wallet lifecycle
-// against the 1Sat service APIs plus (when WALLET_STORAGE_URL is set) a
-// remote BRC-100 storage backend.
-test "e2e: remote wallet against api.1sat.app" {
+// against the 1Sat service APIs plus a storage backend — remote
+// (WALLET_STORAGE_URL) or, by default, the local in-memory LocalStorageClient.
+// The live network call is soft: on failure it logs and skips the chain-height
+// assertion so CI stays deterministic; the storage lifecycle always runs.
+test "e2e: wallet storage lifecycle (local by default, remote via WALLET_STORAGE_URL)" {
     // Use page_allocator for e2e test — the JSON-RPC response parsing has
     // intentional ownership transfer that the testing allocator flags as leaks.
     // The RPC result values reference memory in the parsed arena which can't
@@ -60,6 +64,7 @@ test "e2e: remote wallet against api.1sat.app" {
 
     const storage_url_owned = try getStorageUrl(gpa);
     defer if (storage_url_owned) |u| gpa.free(u);
+    const remote_mode = storage_url_owned != null;
 
     // 1. Generate a fresh random private key
     const private_key = try PrivateKey.generate();
@@ -69,28 +74,38 @@ test "e2e: remote wallet against api.1sat.app" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    // 2. Set up AuthFetch (handles BRC-103/104 mutual auth)
+    // 2. Set up AuthFetch (handles BRC-103/104 mutual auth) — remote only
     var auth_fetch = AuthFetch.init(allocator, io, private_key);
     defer auth_fetch.deinit();
 
-    // 3. Chain height via services (public API, no auth needed)
+    // 3. Chain height via services (public API, no auth needed) — soft check
     var onesat = OneSatServices.init(allocator, .main, host, io);
     defer onesat.deinit();
-    const height = try onesat.getHeight();
-    std.log.info("chain height: {d}", .{height});
-    try std.testing.expect(height > 800000);
+    if (onesat.getHeight()) |height| {
+        std.log.info("chain height: {d}", .{height});
+        try std.testing.expect(height > 800000);
+    } else |err| {
+        std.log.info("skip: api.1sat.app unreachable ({s}); network checks ignored", .{@errorName(err)});
+    }
 
-    const wallet_url = storage_url_owned orelse {
-        std.log.info("skip: set WALLET_STORAGE_URL to run the remote storage lifecycle against a go-wallet-toolbox backend", .{});
-        return;
-    };
+    // 4. Pick storage backend: remote when WALLET_STORAGE_URL is set,
+    //    otherwise the local in-memory client.
+    var storage_local: LocalStorageClient = undefined;
+    var storage_remote: RemoteStorageClient = undefined;
+    if (remote_mode) {
+        storage_remote = RemoteStorageClient.init(allocator, &auth_fetch, storage_url_owned.?);
+    } else {
+        storage_local = LocalStorageClient.init(allocator);
+    }
+    defer if (remote_mode) storage_remote.deinit() else storage_local.deinit();
 
-    var storage_client = RemoteStorageClient.init(allocator, &auth_fetch, wallet_url);
-    defer storage_client.deinit();
-
-    // 4. Wire up WalletStorageManager with remote as active provider
+    // 5. Wire up WalletStorageManager with the chosen provider as active
     var storage_mgr = WalletStorageManager.init(allocator);
-    storage_mgr.setActive(storage_client.storageProvider());
+    const provider = if (remote_mode)
+        storage_remote.storageProvider()
+    else
+        storage_local.storageProvider();
+    storage_mgr.setActive(provider);
 
     // 6. Build the Wallet
     var wallet = try Wallet.init(allocator, .{
@@ -104,15 +119,20 @@ test "e2e: remote wallet against api.1sat.app" {
     const identity = wallet.getPublicKey();
     std.log.info("identity key: {s}", .{identity});
 
+    // Direct storage calls go through the provider interface (works for both
+    // remote and local backends).
+    const storage = provider;
+
     // -- Step A: makeAvailable --
-    // This should return the server's TableSettings
-    const settings = try storage_client.makeAvailable(allocator);
+    // Remote should return the server's TableSettings; local returns a
+    // simple availability object.
+    const settings = try storage.makeAvailable(allocator);
     std.log.info("makeAvailable: {}", .{settings});
     try std.testing.expect(settings != .null);
 
     // -- Step B: findOrInsertUser --
-    // Auto-creates the user on the server since this is a brand new key
-    const user_result = try storage_client.findOrInsertUser(allocator, identity);
+    // Auto-creates the user since this is a brand new key
+    const user_result = try storage.findOrInsertUser(allocator, identity);
     std.log.info("findOrInsertUser: {}", .{user_result});
 
     switch (user_result) {
@@ -143,5 +163,5 @@ test "e2e: remote wallet against api.1sat.app" {
     const actions = try wallet.listActions(.{ .limit = 10 });
     std.log.info("listActions: {}", .{actions});
 
-    std.log.info("=== e2e test passed ===", .{});
+    std.log.info("=== e2e test passed (mode: {s}) ===", .{if (remote_mode) "remote" else "local"});
 }
