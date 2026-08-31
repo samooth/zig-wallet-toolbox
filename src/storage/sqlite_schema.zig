@@ -2,7 +2,7 @@ const std = @import("std");
 const sqlite = @import("sqlite");
 
 /// Current schema version. Increment when making breaking schema changes.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Run all schema migrations up to SCHEMA_VERSION.
 /// This is idempotent - safe to call multiple times.
@@ -51,6 +51,7 @@ pub fn migrate(db: *sqlite.Db) !void {
         "CREATE TABLE IF NOT EXISTS sync_state (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, storage_name TEXT NOT NULL, last_synced_at INTEGER, chunk_size INTEGER NOT NULL DEFAULT 1000, FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)",
         "CREATE TABLE IF NOT EXISTS key_value (key TEXT PRIMARY KEY, value BLOB NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))",
         "CREATE TABLE IF NOT EXISTS key_shares (identity_key TEXT PRIMARY KEY, shares_json TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))",
+        "CREATE TABLE IF NOT EXISTS pending_sign_actions (reference TEXT PRIMARY KEY, identity_key TEXT NOT NULL, tx_json TEXT NOT NULL, create_args_json TEXT NOT NULL, input_beef TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), expires_at INTEGER NOT NULL)",
         "CREATE TABLE IF NOT EXISTS commissions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, transaction_id INTEGER NOT NULL, amount INTEGER NOT NULL, description TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE, FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE)",
         "CREATE TABLE IF NOT EXISTS user_utxos (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, output_id INTEGER NOT NULL, reserved_by_id INTEGER, utxo_status TEXT NOT NULL, satoshis INTEGER NOT NULL, FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE, FOREIGN KEY (output_id) REFERENCES outputs(id) ON DELETE CASCADE, FOREIGN KEY (reserved_by_id) REFERENCES transactions(id) ON DELETE SET NULL)",
         "CREATE INDEX IF NOT EXISTS idx_user_utxos_selection ON user_utxos(user_id, utxo_status, satoshis)",

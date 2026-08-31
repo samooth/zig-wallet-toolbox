@@ -10,14 +10,22 @@ const services = @import("services/lib.zig");
 const storage = @import("storage/lib.zig");
 const signer = @import("signer/lib.zig");
 const PrivilegedKeyManager = @import("keymanagement/privileged.zig").PrivilegedKeyManager;
+const pending = @import("wallet/pending_sign_actions.zig");
 
 pub const Chain = enum { main, @"test" };
+
+pub const pending_sign_actions = pending;
+pub const PendingSignActionsRepo = pending.PendingSignActionsRepo;
 
 pub const WalletConfig = struct {
     private_key: ec.PrivateKey,
     chain: Chain,
     wallet_services: services.WalletServices,
     storage_manager: storage.WalletStorageManager,
+    /// Optional pending-sign-actions repository (SQLite-backed). When set,
+    /// createAction persists its assembled state under the storage reference
+    /// so signAction/abortAction flows can retrieve it (Go SDK parity).
+    pending_actions: ?*pending.PendingSignActionsRepo = null,
 };
 
 pub const ListOutputsArgs = struct {
@@ -104,6 +112,7 @@ pub const Wallet = struct {
     chain: Chain,
     wallet_services: services.WalletServices,
     storage_manager: storage.WalletStorageManager,
+    pending_actions: ?*pending.PendingSignActionsRepo = null,
 
     pub fn init(allocator: std.mem.Allocator, config: WalletConfig) !Wallet {
         const pub_key = try config.private_key.publicKey();
@@ -118,6 +127,7 @@ pub const Wallet = struct {
             .chain = config.chain,
             .wallet_services = config.wallet_services,
             .storage_manager = config.storage_manager,
+            .pending_actions = config.pending_actions,
         };
     }
 
@@ -145,13 +155,65 @@ pub const Wallet = struct {
 
     pub fn createAction(self: *Wallet, args: signer.types.CreateActionArgs) !signer.types.CreateActionResult {
         const args_json = try args.toJson(self.allocator);
+        defer {
+            var mut = args_json;
+            if (mut == .object) mut.object.deinit(self.allocator);
+        }
         const result = try self.storage_manager.createAction(self.allocator, self.authId(), args_json);
+
+        // Persist the pending sign action (Go SDK parity): the assembled
+        // create-result plus the original args, keyed by storage reference.
+        if (self.pending_actions) |repo| {
+            const create_result = signer.types.CreateActionResult{ .raw = result };
+            if (create_result.getReference()) |ref| {
+                var result_buf = std.Io.Writer.Allocating.init(self.allocator);
+                defer result_buf.deinit();
+                var w: std.json.Stringify = .{ .writer = &result_buf.writer, .options = .{} };
+                w.write(result) catch {
+                    // Serialization failure is non-fatal for the action itself.
+                    return .{ .raw = result };
+                };
+                var args_buf = std.Io.Writer.Allocating.init(self.allocator);
+                defer args_buf.deinit();
+                var aw: std.json.Stringify = .{ .writer = &args_buf.writer, .options = .{} };
+                aw.write(args_json) catch {};
+
+                const res_str = self.allocator.dupe(u8, result_buf.written()) catch "";
+                const args_str = self.allocator.dupe(u8, args_buf.written()) catch "";
+                defer if (res_str.len > 0) self.allocator.free(res_str);
+                defer if (args_str.len > 0) self.allocator.free(args_str);
+                if (res_str.len > 0 and args_str.len > 0) {
+                    repo.save(.{
+                        .reference = ref,
+                        .identity_key = &self.identity_key,
+                        .tx_json = res_str,
+                        .create_args_json = args_str,
+                        .input_beef = null,
+                    }) catch |err| {
+                        std.log.warn("pending sign action save failed for {s}: {s}", .{ ref, @errorName(err) });
+                    };
+                }
+            }
+        }
+
         return .{ .raw = result };
     }
 
     pub fn signAction(self: *Wallet, args: signer.types.SignActionArgs) !signer.types.SignActionResult {
         const args_json = try args.toJson(self.allocator);
+        defer {
+            var mut = args_json;
+            if (mut == .object) mut.object.deinit(self.allocator);
+        }
         const result = try self.storage_manager.processAction(self.allocator, self.authId(), args_json);
+
+        // The pending action is consumed by a successful sign (Go SDK parity).
+        if (self.pending_actions) |repo| {
+            repo.delete(args.reference) catch |err| {
+                std.log.warn("pending sign action delete failed for {s}: {s}", .{ args.reference, @errorName(err) });
+            };
+        }
+
         return .{ .raw = result };
     }
 
@@ -159,6 +221,13 @@ pub const Wallet = struct {
         var obj = try std.json.ObjectMap.init(self.allocator, &[_][]const u8{}, &[_]std.json.Value{});
         try obj.put(self.allocator, "reference", .{ .string = reference });
         const args_json: std.json.Value = .{ .object = obj };
+        defer obj.deinit(self.allocator);
+
+        // Abandoning releases the pending action (Go SDK parity).
+        if (self.pending_actions) |repo| {
+            repo.delete(reference) catch {};
+        }
+
         return self.storage_manager.abortAction(self.allocator, self.authId(), args_json);
     }
 

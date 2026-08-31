@@ -4,4 +4,5 @@ comptime {
     _ = @import("sqlite_persistence_test.zig");
     _ = @import("privileged_key_test.zig");
     _ = @import("monitor_test.zig");
+    _ = @import("storage_server_test.zig");
 }
